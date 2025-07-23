@@ -19,7 +19,12 @@ import unicodedata
 from datetime import time
 from io import BytesIO
 
-st.set_page_config(page_title="⛏️ T-Metal – BI Operacional", layout="wide")
+st.set_page_config(
+    page_title="⛏️ T-Metal – BI Operacional",
+    page_icon="⛏️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # ─────────────────────────────────────────────────────────────
 # 0 | Parámetros globales
