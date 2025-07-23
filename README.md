@@ -6,12 +6,15 @@ Sistema de Business Intelligence operacional para T-Metal que analiza datos GPS 
 
 ## 🚀 Características Principales
 
-- **Producción Horaria**: Análisis de viajes de carga por hora
-- **Conteo de Viajes**: Estadísticas por tipo de proceso (carga, retorno, descarga)
-- **Ciclos Completos**: Detección automática de ciclos Stock→Módulo→Stock
-- **Productividad**: Cálculo de % horas de carga vs horas activas por vehículo
-- **Toneladas Estimadas**: Estimación de toneladas transportadas (distribución normal)
-- **Exportación Excel**: Generación de reportes en formato Excel
+- **🌅🌙 Sistema de Turnos**: Filtros y métricas diferenciadas por turno día/noche
+- **🏗️ Soporte Pilas ROM**: Detección automática de Pila Rom 1, 2, 3 como áreas de carga
+- **📊 Producción Mejorada**: Análisis de viajes de carga Y descarga como producción
+- **📈 Visualizaciones Avanzadas**: Gráficos combinados con colores diferenciados
+- **📋 Conteo Detallado**: Estadísticas completas por tipo de viaje con porcentajes
+- **🔄 Ciclos Completos**: Detección automática de ciclos Stock→Módulo/Pila ROM→Stock
+- **🚀 Productividad**: Cálculo de % horas de carga vs horas activas por vehículo
+- **🪨 Toneladas Estimadas**: Estimación de toneladas por viaje de producción
+- **💾 Exportación Excel**: Generación de reportes completos en formato Excel
 
 ## 📋 Requisitos
 
@@ -94,16 +97,21 @@ SHIFT_NIGHT_START = time(20,0) # Inicio turno noche
 El sistema detecta automáticamente:
 - **STOCKS**: Geocercas que contienen "stock"
 - **MODULES**: Geocercas que contienen "modulo"
+- **PILAS_ROM**: Geocercas que contienen "pila rom" (Pila Rom 1, 2, 3)
 - **BOTADEROS**: Geocercas que contienen "botadero"
 
 ## 📁 Estructura del Proyecto
 
 ```
 t-metal-bi/
-├── app5.py              # Aplicación principal
-├── requirements.txt     # Dependencias
-├── README.md           # Documentación
-└── .gitignore          # Archivos a ignorar
+├── app5.py                    # Aplicación principal
+├── requirements.txt           # Dependencias
+├── test_app5.py              # Script de pruebas automatizadas
+├── datos_prueba.csv          # Datos de prueba
+├── CHECKLIST_PRUEBAS.md      # Checklist de pruebas manuales
+├── CHANGELOG.md              # Historial de cambios
+├── README.md                 # Documentación
+└── .gitignore                # Archivos a ignorar
 ```
 
 ## 🔍 Procesamiento de Datos
@@ -177,7 +185,16 @@ Este proyecto está bajo la Licencia MIT. Ver `LICENSE` para más detalles.
 
 ## 🔄 Historial de Versiones
 
-### v1.0.0 (2025-01-27)
+### v2.0.0 (2025-07-23)
+- 🌅🌙 Sistema de turnos día/noche con filtros y métricas diferenciadas
+- 🏗️ Integración completa de Pilas ROM (Pila Rom 1, 2, 3)
+- 📊 Concepto de producción ampliado (carga + descarga)
+- 📈 Visualizaciones mejoradas con colores diferenciados
+- 📋 Conteo detallado de viajes con porcentajes
+- 🧪 Sistema completo de pruebas automatizadas
+- 📚 Documentación exhaustiva y checklist de pruebas
+
+### v1.0.0 (2025-06-25)
 - Versión inicial
 - Dashboard operacional completo
 - Exportación a Excel
