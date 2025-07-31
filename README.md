@@ -99,6 +99,9 @@ El sistema detecta automáticamente:
 - **MODULES**: Geocercas que contienen "modulo"
 - **PILAS_ROM**: Geocercas que contienen "pila rom" (Pila Rom 1, 2, 3)
 - **BOTADEROS**: Geocercas que contienen "botadero"
+- **INSTALACIONES_FAENA**: Geocercas que contienen "instalacion" o "faena"
+- **CASINO**: Geocercas que contienen "casino"
+- **GEOCERCAS_NO_OPERACIONALES**: Incluye Instalaciones de Faena y Casino (viajes clasificados como "otro")
 
 ## 📁 Estructura del Proyecto
 

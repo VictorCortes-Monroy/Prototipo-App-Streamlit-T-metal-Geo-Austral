@@ -56,7 +56,8 @@ BOTADEROS: set[str] = set()       # Geocercas de botaderos
 - **Algoritmo**:
   - Extrae geocercas únicas
   - Busca palabras clave en nombres normalizados
-  - Clasifica en STOCKS, MODULES, BOTADEROS
+  - Clasifica en STOCKS, MODULES, BOTADEROS, PILAS_ROM, INSTALACIONES_FAENA, CASINO
+  - Agrupa INSTALACIONES_FAENA y CASINO como GEOCERCAS_NO_OPERACIONALES
 
 ### 3. Extracción de Transiciones
 
@@ -84,10 +85,10 @@ BOTADEROS: set[str] = set()       # Geocercas de botaderos
 #### `clasificar_proceso(row: pd.Series) -> str`
 - **Propósito**: Categoriza transiciones en tipos de proceso
 - **Clasificaciones**:
-  - `"carga"`: Stock → Módulo
-  - `"retorno"`: Módulo → Stock
-  - `"descarga"`: Módulo → Botadero
-  - `"otro"`: Cualquier otra combinación
+  - `"carga"`: Stock → Módulo/Pila ROM
+  - `"descarga"`: Módulo/Pila ROM → Botadero
+  - `"retorno"`: Botadero → Módulo/Pila ROM (después de descarga) o Módulo/Pila ROM → Stock (después de carga)
+  - `"otro"`: Cualquier otra combinación, incluyendo movimientos hacia/desde Instalaciones de Faena o Casino
 
 ### 5. Detección de Ciclos
 
@@ -157,9 +158,8 @@ def detectar_geocercas(nombre: str) -> str:
 
 ### Estimación de Toneladas
 ```python
-# Distribución normal: N(42 ton, σ=3 ton)
-toneladas = np.random.normal(loc=42, scale=3, size=n_viajes)
-toneladas = np.clip(toneladas, 0, None)  # No negativas
+# Promedio fijo de 42 toneladas por viaje de producción
+toneladas = 42.0
 ```
 
 ### Cálculo de Productividad
