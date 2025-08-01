@@ -44,8 +44,46 @@ PILAS_ROM: set[str] = set()
 # Funciones copiadas de app6
 # ─────────────────────────────────────────────────────────────
 def turno(ts: pd.Timestamp) -> str:
+    """
+    Determina el turno basado en la hora.
+    - Día: 08:00 - 19:59
+    - Noche: 20:00 - 07:59 (del día siguiente)
+    """
     h = ts.time()
     return "dia" if SHIFT_DAY_START <= h < SHIFT_NIGHT_START else "noche"
+
+def turno_con_fecha(ts: pd.Timestamp) -> tuple[str, pd.Timestamp]:
+    """
+    Determina el turno y la fecha correspondiente.
+    Para turnos de noche (20:00-07:59), la fecha es del día que inició el turno.
+    
+    Returns:
+        tuple: (turno, fecha_turno)
+    """
+    h = ts.time()
+    if SHIFT_DAY_START <= h < SHIFT_NIGHT_START:
+        # Turno día: mismo día
+        return "dia", ts.normalize()
+    else:
+        # Turno noche: si es antes de las 8:00, pertenece al turno del día anterior
+        if h < SHIFT_DAY_START:
+            # Es madrugada (00:00-07:59), pertenece al turno de noche del día anterior
+            fecha_turno = ts.normalize() - pd.Timedelta(days=1)
+        else:
+            # Es noche (20:00-23:59), pertenece al turno de noche del mismo día
+            fecha_turno = ts.normalize()
+        return "noche", fecha_turno
+
+def obtener_descripcion_turno(turno_tipo: str, fecha_turno: pd.Timestamp) -> str:
+    """
+    Genera descripción detallada del turno.
+    """
+    fecha_str = fecha_turno.strftime("%d-%m-%Y")
+    if turno_tipo == "dia":
+        return f"Turno Día {fecha_str} (08:00-19:59)"
+    else:
+        fecha_siguiente = (fecha_turno + pd.Timedelta(days=1)).strftime("%d-%m-%Y")
+        return f"Turno Noche {fecha_str} (20:00 del {fecha_str} - 07:59 del {fecha_siguiente})"
 
 def normalizar(s: str) -> str:
     """Quita tildes y pasa a minúsculas para detección robusta."""
@@ -156,6 +194,7 @@ def extraer_transiciones(df: pd.DataFrame) -> pd.DataFrame:
             
             total_cambios += 1
             
+            turno_tipo, fecha_turno = turno_con_fecha(tiempos_entrada[i])
             transiciones_completas.append({
                 "Nombre del Vehículo": veh,
                 "Origen": origen,
@@ -163,7 +202,9 @@ def extraer_transiciones(df: pd.DataFrame) -> pd.DataFrame:
                 "Tiempo_entrada": tiempos_entrada[i],
                 "Tiempo_salida": tiempo_salida_origen,
                 "Duracion_s": duracion_permanencia,
-                "Turno": turno(tiempos_entrada[i])
+                "Turno": turno_tipo,
+                "Fecha_Turno": fecha_turno,
+                "Descripcion_Turno": obtener_descripcion_turno(turno_tipo, fecha_turno)
             })
 
     if transiciones_completas:
@@ -171,7 +212,7 @@ def extraer_transiciones(df: pd.DataFrame) -> pd.DataFrame:
     else:
         return pd.DataFrame(columns=[
             "Nombre del Vehículo", "Origen", "Destino",
-            "Tiempo_entrada", "Tiempo_salida", "Duracion_s", "Turno"
+            "Tiempo_entrada", "Tiempo_salida", "Duracion_s", "Turno", "Fecha_Turno", "Descripcion_Turno"
         ])
 
 def clasificar_proceso_con_secuencia(df: pd.DataFrame) -> pd.DataFrame:
@@ -302,6 +343,7 @@ def extraer_tiempos_viaje(df: pd.DataFrame) -> pd.DataFrame:
             elif destino == "DESCONOCIDO":
                 casos_desconocidos["destino"] += 1
             
+            turno_tipo, fecha_turno = turno_con_fecha(inicio)
             viajes.append({
                 "Nombre del Vehículo": veh,
                 "Origen": origen,
@@ -309,7 +351,9 @@ def extraer_tiempos_viaje(df: pd.DataFrame) -> pd.DataFrame:
                 "Inicio_viaje": inicio,
                 "Fin_viaje": fin,
                 "Duracion_viaje_s": duracion_s,
-                "Turno": turno(inicio)
+                "Turno": turno_tipo,
+                "Fecha_Turno": fecha_turno,
+                "Descripcion_Turno": obtener_descripcion_turno(turno_tipo, fecha_turno)
             })
     
     # Logging para diagnóstico
@@ -325,8 +369,56 @@ def extraer_tiempos_viaje(df: pd.DataFrame) -> pd.DataFrame:
     else:
         return pd.DataFrame(columns=[
             "Nombre del Vehículo", "Origen", "Destino",
-            "Inicio_viaje", "Fin_viaje", "Duracion_viaje_s", "Turno"
+            "Inicio_viaje", "Fin_viaje", "Duracion_viaje_s", "Turno", "Fecha_Turno", "Descripcion_Turno"
         ])
+
+def construir_analisis_horario(trans_filtradas: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Construye análisis detallado de viajes por hora.
+    
+    Returns:
+        tuple: (viajes_por_hora_general, viajes_por_hora_por_vehiculo)
+    """
+    if trans_filtradas.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    # Filtrar solo viajes de producción (carga/descarga)
+    viajes_produccion = trans_filtradas[trans_filtradas["Proceso"].isin(["carga", "descarga"])].copy()
+    
+    if viajes_produccion.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    # Crear columnas de hora, fecha y descripción de turno
+    viajes_produccion["Hora"] = viajes_produccion["Tiempo_entrada"].dt.hour
+    viajes_produccion["Fecha"] = viajes_produccion["Tiempo_entrada"].dt.date
+    viajes_produccion["Hora_str"] = viajes_produccion["Tiempo_entrada"].dt.strftime("%H:00")
+    viajes_produccion["Fecha_Hora"] = viajes_produccion["Tiempo_entrada"].dt.strftime("%Y-%m-%d %H:00")
+    
+    # ─── ANÁLISIS GENERAL POR HORA ───
+    analisis_general = viajes_produccion.groupby(["Fecha_Hora", "Hora_str", "Proceso"]).agg({
+        "Nombre del Vehículo": "count",
+        "Descripcion_Turno": "first"
+    }).rename(columns={"Nombre del Vehículo": "Cantidad_Viajes"}).reset_index()
+    
+    # Ordenar por fecha-hora
+    analisis_general = analisis_general.sort_values("Fecha_Hora")
+    
+    # ─── ANÁLISIS POR VEHÍCULO Y HORA ───
+    analisis_por_vehiculo = viajes_produccion.groupby([
+        "Nombre del Vehículo", "Fecha_Hora", "Hora_str", "Proceso"
+    ]).agg({
+        "Tiempo_entrada": "count",
+        "Descripcion_Turno": "first",
+        "Origen": lambda x: ", ".join(x.unique()),
+        "Destino": lambda x: ", ".join(x.unique())
+    }).rename(columns={
+        "Tiempo_entrada": "Cantidad_Viajes"
+    }).reset_index()
+    
+    # Ordenar por vehículo y fecha-hora
+    analisis_por_vehiculo = analisis_por_vehiculo.sort_values(["Nombre del Vehículo", "Fecha_Hora"])
+    
+    return analisis_general, analisis_por_vehiculo
 
 def construir_metricas_viaje(viajes: pd.DataFrame) -> pd.DataFrame:
     """Construye métricas detalladas por vehículo para tiempos de viaje."""
@@ -756,9 +848,51 @@ if archivo:
         destino_opts = ["Todas"] + todas_geocercas
         destino_sel = st.selectbox("Geocerca Destino", destino_opts)
 
+    # ─── FILTRO ADICIONAL: Rango de Horas ────────────────────────
+    st.markdown("**⏰ Filtro por Rango de Horas:**")
+    col1, col2, col3 = st.columns([2, 2, 1])
+    
+    with col1:
+        # Crear DataFrame con fechas filtradas para obtener rango de horas
+        df_temp = df[(df["Tiempo de evento"].dt.date >= rango[0]) & 
+                     (df["Tiempo de evento"].dt.date <= rango[1])]
+        
+        if not df_temp.empty:
+            hora_min = df_temp["Tiempo de evento"].dt.hour.min()
+            hora_max = df_temp["Tiempo de evento"].dt.hour.max()
+        else:
+            hora_min, hora_max = 0, 23
+        
+        rango_horas = st.slider(
+            "Seleccionar rango de horas",
+            min_value=0, max_value=23,
+            value=(hora_min, hora_max),
+            help="Filtra los datos por rango de horas dentro de las fechas seleccionadas"
+        )
+    
+    with col2:
+        st.info(f"""
+        **Rango seleccionado:** {rango_horas[0]:02d}:00 - {rango_horas[1]:02d}:59
+        
+        **Turnos incluidos:**
+        • Día (08:00-19:59): {'✅' if (rango_horas[0] <= 19 and rango_horas[1] >= 8) else '❌'}
+        • Noche (20:00-07:59): {'✅' if (rango_horas[0] <= 7 or rango_horas[1] >= 20) else '❌'}
+        """)
+    
+    with col3:
+        aplicar_filtro_horas = st.checkbox("Aplicar filtro de horas", value=False)
+
     # Aplicar filtros a los datos
     df_filtrado = df[(df["Tiempo de evento"].dt.date >= rango[0]) & 
                      (df["Tiempo de evento"].dt.date <= rango[1])]
+    
+    # Aplicar filtro de horas si está activado
+    if aplicar_filtro_horas:
+        hora_inicio, hora_fin = rango_horas
+        df_filtrado = df_filtrado[
+            (df_filtrado["Tiempo de evento"].dt.hour >= hora_inicio) &
+            (df_filtrado["Tiempo de evento"].dt.hour <= hora_fin)
+        ]
     
     if veh_sel != "Todos":
         df_filtrado = df_filtrado[df_filtrado["Nombre del Vehículo"] == veh_sel]
@@ -786,11 +920,21 @@ if archivo:
     st.subheader("📊 Matriz de Viajes de Producción (Carga/Descarga)")
     
     if not trans_filtradas.empty:
-        viajes_produccion = trans_filtradas[trans_filtradas["Proceso"].isin(["carga", "descarga"])]
+        viajes_produccion = trans_filtradas[trans_filtradas["Proceso"].isin(["carga", "descarga"])].copy()
         
         if not viajes_produccion.empty:
-            # Tabs para mostrar matriz general y por vehículo
-            tab1, tab2 = st.tabs(["📊 Matriz General", "🚛 Detalle por Vehículo"])
+            # Preparar columnas adicionales para análisis temporal
+            viajes_produccion["Fecha_str"] = viajes_produccion["Fecha_Turno"].dt.strftime("%d/%m/%Y")
+            viajes_produccion["Turno_str"] = viajes_produccion["Turno"].map({"dia": "Día", "noche": "Noche"})
+            
+            # Tabs expandidas para mostrar diferentes matrices
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                "📊 Matriz General", 
+                "📅 Matriz por Fecha", 
+                "🌅 Matriz por Turno",
+                "📅🌅 Matriz Fecha-Turno",
+                "🚛 Detalle por Vehículo"
+            ])
             
             with tab1:
                 st.markdown("**Matriz General de Viajes Origen → Destino**")
@@ -822,7 +966,197 @@ if archivo:
                     st.metric("Total Producción", total_produccion)
             
             with tab2:
-                st.markdown("**Detalle de Viajes por Vehículo**")
+                st.markdown("**📅 Matriz de Viajes por Fecha**")
+                
+                # Matriz agrupada por fecha
+                matriz_por_fecha = viajes_produccion.groupby(["Fecha_str", "Proceso"]).size().reset_index(name="Cantidad")
+                
+                # Pivot por fecha
+                matriz_fecha_pivot = matriz_por_fecha.pivot_table(
+                    index="Fecha_str",
+                    columns="Proceso",
+                    values="Cantidad",
+                    fill_value=0,
+                    aggfunc="sum"
+                ).reset_index()
+                
+                # Agregar columna de total
+                if "carga" in matriz_fecha_pivot.columns and "descarga" in matriz_fecha_pivot.columns:
+                    matriz_fecha_pivot["Total"] = matriz_fecha_pivot["carga"] + matriz_fecha_pivot["descarga"]
+                elif "carga" in matriz_fecha_pivot.columns:
+                    matriz_fecha_pivot["Total"] = matriz_fecha_pivot["carga"]
+                elif "descarga" in matriz_fecha_pivot.columns:
+                    matriz_fecha_pivot["Total"] = matriz_fecha_pivot["descarga"]
+                
+                # Renombrar columnas
+                matriz_fecha_pivot = matriz_fecha_pivot.rename(columns={
+                    "Fecha_str": "Fecha",
+                    "carga": "Cargas",
+                    "descarga": "Descargas"
+                })
+                
+                # Ordenar por fecha
+                if "Fecha" in matriz_fecha_pivot.columns:
+                    matriz_fecha_pivot["Fecha_sort"] = pd.to_datetime(matriz_fecha_pivot["Fecha"], format="%d/%m/%Y")
+                    matriz_fecha_pivot = matriz_fecha_pivot.sort_values("Fecha_sort").drop("Fecha_sort", axis=1)
+                
+                st.dataframe(matriz_fecha_pivot, use_container_width=True)
+                
+                # Gráfico por fecha
+                if not matriz_por_fecha.empty:
+                    chart_fecha = (
+                        alt.Chart(matriz_por_fecha)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Fecha_str:N", title="Fecha", sort=None),
+                            y=alt.Y("Cantidad:Q", title="Cantidad de Viajes"),
+                            color=alt.Color("Proceso:N", 
+                                           scale=alt.Scale(domain=["carga", "descarga"], 
+                                                         range=["#1f77b4", "#ff7f0e"])),
+                            tooltip=["Fecha_str:N", "Proceso:N", "Cantidad:Q"]
+                        )
+                        .properties(height=300, title="Viajes de Producción por Fecha")
+                    )
+                    st.altair_chart(chart_fecha, use_container_width=True)
+            
+            with tab3:
+                st.markdown("**🌅 Matriz de Viajes por Turno**")
+                
+                # Matriz agrupada por turno
+                matriz_por_turno = viajes_produccion.groupby(["Turno_str", "Proceso"]).size().reset_index(name="Cantidad")
+                
+                # Pivot por turno
+                matriz_turno_pivot = matriz_por_turno.pivot_table(
+                    index="Turno_str",
+                    columns="Proceso", 
+                    values="Cantidad",
+                    fill_value=0,
+                    aggfunc="sum"
+                ).reset_index()
+                
+                # Agregar columna de total
+                if "carga" in matriz_turno_pivot.columns and "descarga" in matriz_turno_pivot.columns:
+                    matriz_turno_pivot["Total"] = matriz_turno_pivot["carga"] + matriz_turno_pivot["descarga"]
+                elif "carga" in matriz_turno_pivot.columns:
+                    matriz_turno_pivot["Total"] = matriz_turno_pivot["carga"]
+                elif "descarga" in matriz_turno_pivot.columns:
+                    matriz_turno_pivot["Total"] = matriz_turno_pivot["descarga"]
+                
+                # Renombrar columnas
+                matriz_turno_pivot = matriz_turno_pivot.rename(columns={
+                    "Turno_str": "Turno",
+                    "carga": "Cargas",
+                    "descarga": "Descargas"
+                })
+                
+                st.dataframe(matriz_turno_pivot, use_container_width=True)
+                
+                # Gráfico por turno
+                if not matriz_por_turno.empty:
+                    chart_turno = (
+                        alt.Chart(matriz_por_turno)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Turno_str:N", title="Turno"),
+                            y=alt.Y("Cantidad:Q", title="Cantidad de Viajes"),
+                            color=alt.Color("Proceso:N",
+                                           scale=alt.Scale(domain=["carga", "descarga"], 
+                                                         range=["#1f77b4", "#ff7f0e"])),
+                            tooltip=["Turno_str:N", "Proceso:N", "Cantidad:Q"]
+                        )
+                        .properties(height=300, title="Viajes de Producción por Turno")
+                    )
+                    st.altair_chart(chart_turno, use_container_width=True)
+                
+                # Estadísticas adicionales por turno
+                st.markdown("**📊 Estadísticas Detalladas por Turno:**")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Promedio por turno
+                    st.markdown("**Promedio de Viajes por Día de Turno:**")
+                    dias_unicos = viajes_produccion["Fecha_Turno"].nunique()
+                    if dias_unicos > 0:
+                        for turno in ["Día", "Noche"]:
+                            total_turno = matriz_turno_pivot[matriz_turno_pivot["Turno"] == turno]["Total"].sum() if not matriz_turno_pivot.empty else 0
+                            promedio = total_turno / dias_unicos
+                            st.metric(f"Promedio {turno}", f"{promedio:.1f} viajes/día")
+                
+                with col2:
+                    # Distribución porcentual
+                    st.markdown("**Distribución Porcentual:**")
+                    if not matriz_turno_pivot.empty and "Total" in matriz_turno_pivot.columns:
+                        total_general = matriz_turno_pivot["Total"].sum()
+                        if total_general > 0:
+                            for _, row in matriz_turno_pivot.iterrows():
+                                porcentaje = (row["Total"] / total_general) * 100
+                                st.metric(f"% {row['Turno']}", f"{porcentaje:.1f}%")
+            
+            with tab4:
+                st.markdown("**📅🌅 Matriz Combinada por Fecha y Turno**")
+                
+                # Crear descripción combinada de fecha-turno
+                viajes_produccion["Fecha_Turno_str"] = viajes_produccion["Fecha_str"] + " - " + viajes_produccion["Turno_str"]
+                
+                # Matriz combinada
+                matriz_fecha_turno = viajes_produccion.groupby(["Fecha_Turno_str", "Proceso"]).size().reset_index(name="Cantidad")
+                
+                # Pivot combinado
+                matriz_ft_pivot = matriz_fecha_turno.pivot_table(
+                    index="Fecha_Turno_str",
+                    columns="Proceso",
+                    values="Cantidad", 
+                    fill_value=0,
+                    aggfunc="sum"
+                ).reset_index()
+                
+                # Agregar columna de total
+                if "carga" in matriz_ft_pivot.columns and "descarga" in matriz_ft_pivot.columns:
+                    matriz_ft_pivot["Total"] = matriz_ft_pivot["carga"] + matriz_ft_pivot["descarga"]
+                elif "carga" in matriz_ft_pivot.columns:
+                    matriz_ft_pivot["Total"] = matriz_ft_pivot["carga"]
+                elif "descarga" in matriz_ft_pivot.columns:
+                    matriz_ft_pivot["Total"] = matriz_ft_pivot["descarga"]
+                
+                # Renombrar columnas
+                matriz_ft_pivot = matriz_ft_pivot.rename(columns={
+                    "Fecha_Turno_str": "Fecha - Turno",
+                    "carga": "Cargas",
+                    "descarga": "Descargas"
+                })
+                
+                st.dataframe(matriz_ft_pivot, use_container_width=True)
+                
+                # Mostrar detalles con descripción completa de turnos
+                st.markdown("**🔍 Vista Detallada con Horarios:**")
+                detalle_turnos = viajes_produccion.groupby(["Descripcion_Turno", "Proceso"]).size().reset_index(name="Cantidad")
+                detalle_pivot = detalle_turnos.pivot_table(
+                    index="Descripcion_Turno",
+                    columns="Proceso",
+                    values="Cantidad",
+                    fill_value=0,
+                    aggfunc="sum"
+                ).reset_index()
+                
+                # Agregar total
+                if "carga" in detalle_pivot.columns and "descarga" in detalle_pivot.columns:
+                    detalle_pivot["Total"] = detalle_pivot["carga"] + detalle_pivot["descarga"]
+                elif "carga" in detalle_pivot.columns:
+                    detalle_pivot["Total"] = detalle_pivot["carga"]
+                elif "descarga" in detalle_pivot.columns:
+                    detalle_pivot["Total"] = detalle_pivot["descarga"]
+                
+                # Renombrar
+                detalle_pivot = detalle_pivot.rename(columns={
+                    "Descripcion_Turno": "Turno Detallado",
+                    "carga": "Cargas",
+                    "descarga": "Descargas"
+                })
+                
+                st.dataframe(detalle_pivot, use_container_width=True)
+            
+            with tab5:
+                st.markdown("**🚛 Detalle de Viajes por Vehículo con Fecha y Turno**")
                 
                 # Selector de vehículo para el detalle
                 vehiculos_disponibles = sorted(viajes_produccion["Nombre del Vehículo"].unique())
@@ -832,39 +1166,112 @@ if archivo:
                 viajes_veh = viajes_produccion[viajes_produccion["Nombre del Vehículo"] == veh_detalle]
                 
                 if not viajes_veh.empty:
-                    # Matriz para el vehículo específico
-                    matriz_veh = viajes_veh.groupby(["Origen", "Destino", "Proceso"]).size().reset_index(name="Cantidad")
-                    matriz_veh_pivot = matriz_veh.pivot_table(
-                        index="Origen", 
-                        columns="Destino", 
-                        values="Cantidad", 
-                        aggfunc="sum", 
-                        fill_value=0
-                    )
+                    # Sub-tabs para diferentes vistas del vehículo
+                    subtab1, subtab2, subtab3 = st.tabs(["📊 Matriz Origen-Destino", "📅 Por Fecha", "🌅 Por Turno"])
                     
-                    st.markdown(f"**Matriz de viajes para {veh_detalle}:**")
-                    st.dataframe(matriz_veh_pivot, use_container_width=True)
+                    with subtab1:
+                        # Matriz tradicional para el vehículo específico
+                        matriz_veh = viajes_veh.groupby(["Origen", "Destino", "Proceso"]).size().reset_index(name="Cantidad")
+                        matriz_veh_pivot = matriz_veh.pivot_table(
+                            index="Origen", 
+                            columns="Destino", 
+                            values="Cantidad", 
+                            aggfunc="sum", 
+                            fill_value=0
+                        )
+                        
+                        st.markdown(f"**Matriz de viajes para {veh_detalle}:**")
+                        st.dataframe(matriz_veh_pivot, use_container_width=True)
                     
-                    # Estadísticas por vehículo
-                    col1, col2, col3 = st.columns(3)
+                    with subtab2:
+                        # Análisis por fecha del vehículo
+                        st.markdown(f"**Viajes por Fecha - {veh_detalle}:**")
+                        viajes_veh_fecha = viajes_veh.groupby(["Fecha_str", "Proceso"]).size().reset_index(name="Cantidad")
+                        
+                        if not viajes_veh_fecha.empty:
+                            pivot_veh_fecha = viajes_veh_fecha.pivot_table(
+                                index="Fecha_str",
+                                columns="Proceso",
+                                values="Cantidad",
+                                fill_value=0,
+                                aggfunc="sum"
+                            ).reset_index()
+                            
+                            # Agregar total
+                            if "carga" in pivot_veh_fecha.columns and "descarga" in pivot_veh_fecha.columns:
+                                pivot_veh_fecha["Total"] = pivot_veh_fecha["carga"] + pivot_veh_fecha["descarga"]
+                            elif "carga" in pivot_veh_fecha.columns:
+                                pivot_veh_fecha["Total"] = pivot_veh_fecha["carga"]
+                            elif "descarga" in pivot_veh_fecha.columns:
+                                pivot_veh_fecha["Total"] = pivot_veh_fecha["descarga"]
+                            
+                            pivot_veh_fecha = pivot_veh_fecha.rename(columns={
+                                "Fecha_str": "Fecha",
+                                "carga": "Cargas", 
+                                "descarga": "Descargas"
+                            })
+                            
+                            st.dataframe(pivot_veh_fecha, use_container_width=True)
+                    
+                    with subtab3:
+                        # Análisis por turno del vehículo
+                        st.markdown(f"**Viajes por Turno - {veh_detalle}:**")
+                        viajes_veh_turno = viajes_veh.groupby(["Turno_str", "Proceso"]).size().reset_index(name="Cantidad")
+                        
+                        if not viajes_veh_turno.empty:
+                            pivot_veh_turno = viajes_veh_turno.pivot_table(
+                                index="Turno_str",
+                                columns="Proceso",
+                                values="Cantidad",
+                                fill_value=0,
+                                aggfunc="sum"
+                            ).reset_index()
+                            
+                            # Agregar total
+                            if "carga" in pivot_veh_turno.columns and "descarga" in pivot_veh_turno.columns:
+                                pivot_veh_turno["Total"] = pivot_veh_turno["carga"] + pivot_veh_turno["descarga"]
+                            elif "carga" in pivot_veh_turno.columns:
+                                pivot_veh_turno["Total"] = pivot_veh_turno["carga"]
+                            elif "descarga" in pivot_veh_turno.columns:
+                                pivot_veh_turno["Total"] = pivot_veh_turno["descarga"]
+                            
+                            pivot_veh_turno = pivot_veh_turno.rename(columns={
+                                "Turno_str": "Turno",
+                                "carga": "Cargas",
+                                "descarga": "Descargas"
+                            })
+                            
+                            st.dataframe(pivot_veh_turno, use_container_width=True)
+                    
+                    # Estadísticas generales del vehículo
+                    st.markdown(f"**📊 Estadísticas Generales - {veh_detalle}:**")
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
                         carga_veh = len(viajes_veh[viajes_veh["Proceso"] == "carga"])
-                        st.metric(f"Cargas - {veh_detalle}", carga_veh)
+                        st.metric("Cargas Total", carga_veh)
                     with col2:
                         descarga_veh = len(viajes_veh[viajes_veh["Proceso"] == "descarga"])
-                        st.metric(f"Descargas - {veh_detalle}", descarga_veh)
+                        st.metric("Descargas Total", descarga_veh)
                     with col3:
+                        dias_activos = viajes_veh["Fecha_Turno"].nunique()
+                        st.metric("Días Activos", dias_activos)
+                    with col4:
                         total_veh = carga_veh + descarga_veh
-                        st.metric(f"Total - {veh_detalle}", total_veh)
+                        promedio_dia = total_veh / dias_activos if dias_activos > 0 else 0
+                        st.metric("Promedio/Día", f"{promedio_dia:.1f}")
                     
                     # Tabla detallada de viajes del vehículo
-                    st.markdown(f"**Detalle completo de viajes - {veh_detalle}:**")
-                    viajes_detalle = viajes_veh[["Tiempo_entrada", "Origen", "Destino", "Proceso", "Turno"]].copy()
+                    st.markdown(f"**📋 Detalle Completo de Viajes - {veh_detalle}:**")
+                    viajes_detalle = viajes_veh[["Tiempo_entrada", "Origen", "Destino", "Proceso", "Descripcion_Turno"]].copy()
                     viajes_detalle["Tiempo_entrada"] = viajes_detalle["Tiempo_entrada"].dt.strftime("%d/%m/%Y %H:%M")
+                    viajes_detalle = viajes_detalle.rename(columns={
+                        "Tiempo_entrada": "Fecha-Hora",
+                        "Descripcion_Turno": "Turno Detallado"
+                    })
                     st.dataframe(viajes_detalle, use_container_width=True)
                 
-                # Resumen por todos los vehículos
-                st.markdown("**📋 Resumen por Todos los Vehículos:**")
+                # Resumen por todos los vehículos con fecha y turno
+                st.markdown("**📋 Resumen General por Todos los Vehículos:**")
                 resumen_vehiculos = viajes_produccion.groupby(["Nombre del Vehículo", "Proceso"]).size().reset_index(name="Cantidad")
                 resumen_pivot = resumen_vehiculos.pivot_table(
                     index="Nombre del Vehículo",
@@ -874,13 +1281,33 @@ if archivo:
                     fill_value=0
                 )
                 
-                # Agregar columna de total
+                # Agregar estadísticas adicionales
                 resumen_pivot["Total"] = resumen_pivot.sum(axis=1)
                 
-                # Ordenar por total descendente
-                resumen_pivot = resumen_pivot.sort_values("Total", ascending=False)
+                # Agregar días activos por vehículo
+                dias_por_vehiculo = viajes_produccion.groupby("Nombre del Vehículo")["Fecha_Turno"].nunique().reset_index()
+                dias_por_vehiculo.columns = ["Nombre del Vehículo", "Dias_Activos"]
                 
-                st.dataframe(resumen_pivot, use_container_width=True)
+                # Merge con resumen
+                resumen_pivot = resumen_pivot.reset_index()
+                resumen_final = pd.merge(resumen_pivot, dias_por_vehiculo, on="Nombre del Vehículo", how="left")
+                
+                # Calcular promedio por día
+                resumen_final["Promedio_Dia"] = (resumen_final["Total"] / resumen_final["Dias_Activos"]).round(1)
+                
+                # Ordenar por total descendente
+                resumen_final = resumen_final.sort_values("Total", ascending=False)
+                
+                # Renombrar columnas para presentación
+                resumen_final = resumen_final.rename(columns={
+                    "Nombre del Vehículo": "Vehículo",
+                    "carga": "Cargas",
+                    "descarga": "Descargas",
+                    "Dias_Activos": "Días Activos",
+                    "Promedio_Dia": "Prom/Día"
+                })
+                
+                st.dataframe(resumen_final, use_container_width=True)
                 
         else:
             st.info("No se encontraron viajes de producción con los filtros aplicados.")
@@ -969,7 +1396,12 @@ if archivo:
                 - **Filtrado de GPS**: Geocercas muy cortas filtradas por ruido GPS
                 """)
                 
-                st.dataframe(casos_problema[["Nombre del Vehículo", "Origen", "Destino", "Inicio_viaje", "Fin_viaje", "Duracion_min", "Turno"]], use_container_width=True)
+                # Renombrar para mejor visualización
+                casos_display = casos_problema[["Nombre del Vehículo", "Origen", "Destino", "Inicio_viaje", "Fin_viaje", "Duracion_min", "Descripcion_Turno"]].copy()
+                casos_display = casos_display.rename(columns={
+                    "Descripcion_Turno": "Turno Detallado"
+                })
+                st.dataframe(casos_display, use_container_width=True)
         else:
             st.success("✅ Todos los viajes tienen origen y destino identificados correctamente")
             
@@ -1109,36 +1541,175 @@ if archivo:
         st.success("✅ No se encontraron zonas candidatas con los parámetros seleccionados")
         st.info("Esto puede indicar que todas las áreas operacionales importantes ya están mapeadas como geocercas")
 
-    # ─── SECCIÓN 6: Producción Horaria ────────────────────────
-    st.subheader("🔋 Producción Horaria")
+    # ─── SECCIÓN 6: Análisis Detallado de Viajes por Hora ────────────────────────
+    st.subheader("📊 Análisis Detallado de Viajes por Hora - Carga y Descarga")
     
     if not trans_filtradas.empty:
-        viajes_produccion_hora = trans_filtradas[trans_filtradas["Proceso"].isin(["carga", "descarga"])].copy()
+        # Construir análisis horario detallado
+        analisis_general, analisis_por_vehiculo = construir_analisis_horario(trans_filtradas)
         
-        if not viajes_produccion_hora.empty:
-            viajes_produccion_hora["Hora_cal"] = viajes_produccion_hora["Tiempo_entrada"].dt.floor("h")
+        if not analisis_general.empty:
+            # Tabs para diferentes vistas del análisis
+            tab1, tab2, tab3, tab4 = st.tabs([
+                "📈 Vista General por Hora", 
+                "🚛 Detalle por Vehículo", 
+                "📋 Tabla Resumen General",
+                "🔍 Tabla Detallada por Vehículo"
+            ])
             
-            # Agrupar por hora y proceso
-            viajes_agrupados = viajes_produccion_hora.groupby(["Hora_cal", "Proceso"]).size().reset_index(name="Cantidad")
-            
-            # Gráfico de producción horaria
-            chart_produccion = (
-                alt.Chart(viajes_agrupados)
-                .mark_line(point=True, size=3)
-                .encode(
-                    x=alt.X("Hora_cal:T", title="Fecha-hora"),
-                    y=alt.Y("Cantidad:Q", title="Cantidad de viajes"),
-                    color=alt.Color("Proceso:N", 
-                                   scale=alt.Scale(domain=["carga", "descarga"], 
-                                                 range=["#1f77b4", "#ff7f0e"]),
-                                   legend=alt.Legend(title="Tipo de viaje")),
-                    tooltip=["Hora_cal:T", "Proceso:N", "Cantidad:Q"]
+            with tab1:
+                st.markdown("**Vista General: Todos los Vehículos por Hora**")
+                
+                # Gráfico de líneas para vista general
+                chart_general = (
+                    alt.Chart(analisis_general)
+                    .mark_line(point=True, size=3)
+                    .encode(
+                        x=alt.X("Fecha_Hora:T", title="Fecha-Hora", axis=alt.Axis(labelAngle=-45)),
+                        y=alt.Y("Cantidad_Viajes:Q", title="Cantidad de Viajes"),
+                        color=alt.Color("Proceso:N", 
+                                       scale=alt.Scale(domain=["carga", "descarga"], 
+                                                     range=["#1f77b4", "#ff7f0e"]),
+                                       legend=alt.Legend(title="Tipo de Viaje")),
+                        tooltip=["Fecha_Hora:T", "Hora_str:N", "Proceso:N", "Cantidad_Viajes:Q", "Descripcion_Turno:N"]
+                    )
+                    .properties(height=400, title="Producción Horaria - Todos los Vehículos")
                 )
-                .properties(height=300, title="Producción horaria - Viajes de carga y descarga")
-            )
-            st.altair_chart(chart_produccion, use_container_width=True)
+                st.altair_chart(chart_general, use_container_width=True)
+                
+                # Estadísticas generales
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    total_carga_hora = analisis_general[analisis_general["Proceso"] == "carga"]["Cantidad_Viajes"].sum()
+                    st.metric("Total Cargas", total_carga_hora)
+                with col2:
+                    total_descarga_hora = analisis_general[analisis_general["Proceso"] == "descarga"]["Cantidad_Viajes"].sum()
+                    st.metric("Total Descargas", total_descarga_hora)
+                with col3:
+                    horas_activas = analisis_general["Fecha_Hora"].nunique()
+                    st.metric("Horas con Actividad", horas_activas)
+                with col4:
+                    promedio_por_hora = (total_carga_hora + total_descarga_hora) / horas_activas if horas_activas > 0 else 0
+                    st.metric("Promedio Viajes/Hora", f"{promedio_por_hora:.1f}")
+            
+            with tab2:
+                st.markdown("**Análisis Individual por Vehículo**")
+                
+                # Selector de vehículo para análisis individual
+                vehiculos_disponibles = sorted(analisis_por_vehiculo["Nombre del Vehículo"].unique())
+                veh_analisis = st.selectbox("Seleccionar vehículo para análisis horario:", vehiculos_disponibles, key="veh_analisis_hora")
+                
+                # Filtrar datos del vehículo seleccionado
+                datos_vehiculo = analisis_por_vehiculo[analisis_por_vehiculo["Nombre del Vehículo"] == veh_analisis]
+                
+                if not datos_vehiculo.empty:
+                    # Gráfico para el vehículo específico
+                    chart_vehiculo = (
+                        alt.Chart(datos_vehiculo)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Fecha_Hora:T", title="Fecha-Hora", axis=alt.Axis(labelAngle=-45)),
+                            y=alt.Y("Cantidad_Viajes:Q", title="Cantidad de Viajes"),
+                            color=alt.Color("Proceso:N", 
+                                           scale=alt.Scale(domain=["carga", "descarga"], 
+                                                         range=["#1f77b4", "#ff7f0e"])),
+                            tooltip=["Fecha_Hora:T", "Proceso:N", "Cantidad_Viajes:Q", "Origen:N", "Destino:N", "Descripcion_Turno:N"]
+                        )
+                        .properties(height=400, title=f"Actividad Horaria - {veh_analisis}")
+                    )
+                    st.altair_chart(chart_vehiculo, use_container_width=True)
+                    
+                    # Estadísticas del vehículo
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        carga_veh = datos_vehiculo[datos_vehiculo["Proceso"] == "carga"]["Cantidad_Viajes"].sum()
+                        st.metric(f"Cargas - {veh_analisis}", carga_veh)
+                    with col2:
+                        descarga_veh = datos_vehiculo[datos_vehiculo["Proceso"] == "descarga"]["Cantidad_Viajes"].sum()
+                        st.metric(f"Descargas - {veh_analisis}", descarga_veh) 
+                    with col3:
+                        horas_activas_veh = datos_vehiculo["Fecha_Hora"].nunique()
+                        st.metric(f"Horas Activas", horas_activas_veh)
+                    with col4:
+                        total_veh = carga_veh + descarga_veh
+                        promedio_veh = total_veh / horas_activas_veh if horas_activas_veh > 0 else 0
+                        st.metric(f"Promedio/Hora", f"{promedio_veh:.1f}")
+                    
+                    # Mostrar rutas más frecuentes del vehículo
+                    st.markdown(f"**🛣️ Rutas Frecuentes - {veh_analisis}:**")
+                    rutas_frecuentes = datos_vehiculo.groupby(["Origen", "Destino", "Proceso"])["Cantidad_Viajes"].sum().reset_index()
+                    rutas_frecuentes = rutas_frecuentes.sort_values("Cantidad_Viajes", ascending=False)
+                    st.dataframe(rutas_frecuentes, use_container_width=True)
+                else:
+                    st.info("No hay datos para el vehículo seleccionado.")
+            
+            with tab3:
+                st.markdown("**📋 Tabla Resumen General por Hora**")
+                # Crear tabla pivot para mejor visualización
+                tabla_resumen = analisis_general.pivot_table(
+                    index=["Fecha_Hora", "Hora_str", "Descripcion_Turno"],
+                    columns="Proceso",
+                    values="Cantidad_Viajes",
+                    fill_value=0,
+                    aggfunc="sum"
+                ).reset_index()
+                
+                # Agregar columna de total
+                if "carga" in tabla_resumen.columns and "descarga" in tabla_resumen.columns:
+                    tabla_resumen["Total"] = tabla_resumen["carga"] + tabla_resumen["descarga"]
+                elif "carga" in tabla_resumen.columns:
+                    tabla_resumen["Total"] = tabla_resumen["carga"]
+                elif "descarga" in tabla_resumen.columns:
+                    tabla_resumen["Total"] = tabla_resumen["descarga"]
+                
+                # Renombrar columnas para mejor presentación
+                tabla_resumen = tabla_resumen.rename(columns={
+                    "Fecha_Hora": "Fecha-Hora",
+                    "Hora_str": "Hora",
+                    "Descripcion_Turno": "Turno",
+                    "carga": "Cargas",
+                    "descarga": "Descargas"
+                })
+                
+                st.dataframe(tabla_resumen, use_container_width=True)
+            
+            with tab4:
+                st.markdown("**🔍 Tabla Detallada por Vehículo y Hora**")
+                # Preparar tabla detallada
+                tabla_detallada = analisis_por_vehiculo.copy()
+                tabla_detallada = tabla_detallada.rename(columns={
+                    "Nombre del Vehículo": "Vehículo",
+                    "Fecha_Hora": "Fecha-Hora",
+                    "Hora_str": "Hora",
+                    "Descripcion_Turno": "Turno",
+                    "Cantidad_Viajes": "Viajes",
+                    "Origen": "Orígenes",
+                    "Destino": "Destinos"
+                })
+                
+                # Permitir filtrar por vehículo
+                vehiculos_tabla = ["Todos"] + sorted(tabla_detallada["Vehículo"].unique())
+                veh_filtro_tabla = st.selectbox("Filtrar por vehículo:", vehiculos_tabla, key="filtro_tabla_detallada")
+                
+                if veh_filtro_tabla != "Todos":
+                    tabla_detallada = tabla_detallada[tabla_detallada["Vehículo"] == veh_filtro_tabla]
+                
+                st.dataframe(tabla_detallada, use_container_width=True)
+                
+                # Estadísticas de la tabla filtrada
+                if not tabla_detallada.empty:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        total_registros = len(tabla_detallada)
+                        st.metric("Registros Mostrados", total_registros)
+                    with col2:
+                        total_viajes_tabla = tabla_detallada["Viajes"].sum()
+                        st.metric("Total Viajes", total_viajes_tabla)
+                    with col3:
+                        vehiculos_unicos = tabla_detallada["Vehículo"].nunique()
+                        st.metric("Vehículos Únicos", vehiculos_unicos)
         else:
-            st.info("No hay viajes de producción para mostrar.")
+            st.info("No hay viajes de producción para mostrar el análisis horario.")
     else:
         st.info("No hay datos de producción para mostrar.")
 
@@ -1237,15 +1808,89 @@ if archivo:
     # ─── Expandir detalles ──────────────────────────────────
     with st.expander("📍 Detalle de transiciones origen → destino"):
         if not trans_filtradas.empty:
-            st.dataframe(trans_filtradas, use_container_width=True)
+            # Reordenar columnas para mejor visualización
+            columnas_mostrar = [
+                "Nombre del Vehículo", "Origen", "Destino", "Proceso",
+                "Tiempo_entrada", "Tiempo_salida", "Duracion_s", 
+                "Descripcion_Turno", "Fecha_Turno"
+            ]
+            trans_display = trans_filtradas.copy()
+            trans_display["Tiempo_entrada"] = trans_display["Tiempo_entrada"].dt.strftime("%d/%m/%Y %H:%M:%S")
+            trans_display["Tiempo_salida"] = trans_display["Tiempo_salida"].dt.strftime("%d/%m/%Y %H:%M:%S")
+            trans_display["Fecha_Turno"] = trans_display["Fecha_Turno"].dt.strftime("%d/%m/%Y")
+            
+            # Mostrar solo las columnas que existen
+            columnas_existentes = [col for col in columnas_mostrar if col in trans_display.columns]
+            st.dataframe(trans_display[columnas_existentes], use_container_width=True)
         else:
             st.info("Sin transiciones disponibles")
 
     with st.expander("🚗 Detalle de tiempos de viaje"):
         if not viajes.empty:
-            st.dataframe(viajes, use_container_width=True)
+            # Reordenar columnas para mejor visualización
+            viajes_display = viajes.copy()
+            viajes_display["Inicio_viaje"] = viajes_display["Inicio_viaje"].dt.strftime("%d/%m/%Y %H:%M:%S")
+            viajes_display["Fin_viaje"] = viajes_display["Fin_viaje"].dt.strftime("%d/%m/%Y %H:%M:%S")
+            viajes_display["Fecha_Turno"] = viajes_display["Fecha_Turno"].dt.strftime("%d/%m/%Y")
+            viajes_display["Duracion_min"] = (viajes_display["Duracion_viaje_s"] / 60).round(1)
+            
+            columnas_viajes = [
+                "Nombre del Vehículo", "Origen", "Destino",
+                "Inicio_viaje", "Fin_viaje", "Duracion_min", "Duracion_viaje_s",
+                "Descripcion_Turno", "Fecha_Turno"
+            ]
+            columnas_existentes = [col for col in columnas_viajes if col in viajes_display.columns]
+            st.dataframe(viajes_display[columnas_existentes], use_container_width=True)
         else:
             st.info("Sin viajes detectados")
+    
+    # Nuevo expandible con información detallada de turnos
+    with st.expander("⏰ Información Detallada de Turnos"):
+        st.markdown("""
+        **🌅 Definición de Turnos Mejorada:**
+        
+        **Turno Día:**
+        - Horario: 08:00 - 19:59
+        - La fecha del turno corresponde al mismo día
+        - Ejemplo: Turno Día 31-07-2025 (08:00-19:59 del 31-07-2025)
+        
+        **Turno Noche:**
+        - Horario: 20:00 - 07:59 (del día siguiente)
+        - La fecha del turno corresponde al día que INICIA el turno
+        - Ejemplo: Turno Noche 31-07-2025 (20:00 del 31-07-2025 - 07:59 del 01-08-2025)
+        
+        **📊 Ejemplos de Consultas:**
+        - "¿Cuántos viajes hizo el vehículo X en el turno de noche del día 31-07-2025?"
+          → Se incluyen viajes desde 20:00 del 31-07-2025 hasta 07:59 del 01-08-2025
+        - "¿Cuántas cargas se realizaron en el turno día del 01-08-2025?"
+          → Se incluyen cargas desde 08:00 hasta 19:59 del 01-08-2025
+        """)
+        
+        # Mostrar estadísticas de turnos si hay datos
+        if not trans_filtradas.empty:
+            st.markdown("**📈 Estadísticas de Turnos en Datos Filtrados:**")
+            
+            # Contar por tipo de turno y fecha
+            stats_turnos = trans_filtradas.groupby(["Descripcion_Turno", "Proceso"]).size().reset_index(name="Cantidad")
+            
+            if not stats_turnos.empty:
+                # Crear tabla pivot
+                stats_pivot = stats_turnos.pivot_table(
+                    index="Descripcion_Turno",
+                    columns="Proceso", 
+                    values="Cantidad",
+                    fill_value=0,
+                    aggfunc="sum"
+                ).reset_index()
+                
+                st.dataframe(stats_pivot, use_container_width=True)
+            
+            # Mostrar resumen de fechas únicas por turno
+            st.markdown("**📅 Fechas Únicas por Tipo de Turno:**")
+            fechas_turno = trans_filtradas.groupby("Turno")["Fecha_Turno"].nunique().reset_index()
+            fechas_turno.columns = ["Tipo de Turno", "Días Únicos"]
+            fechas_turno["Tipo de Turno"] = fechas_turno["Tipo de Turno"].map({"dia": "Día", "noche": "Noche"})
+            st.dataframe(fechas_turno, use_container_width=True)
 
     # ─── Exportar a Excel ───────────────────────────────────
     buf = BytesIO()
