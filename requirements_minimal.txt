@@ -1,0 +1,9 @@
+# Versión ultra-minimalista para debugging
+streamlit
+pandas
+numpy
+altair
+folium
+streamlit-folium
+scikit-learn
+xlsxwriter
