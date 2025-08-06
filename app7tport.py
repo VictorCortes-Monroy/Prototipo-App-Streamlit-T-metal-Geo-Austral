@@ -1,11 +1,10 @@
 """
-Streamlit - T-Metal · BI Operacional + Análisis de Tiempos de Viaje - MEJORADO
-Versión 2025-01-31 – Dashboard reorganizado con:
-• Filtros por geocerca origen y destino
-• Matriz de viajes de carga/descarga
-• Análisis de tiempos de viaje optimizado
-• Eliminación de gráficos innecesarios
-• Sin métricas de productividad
+Streamlit - T-Metal · Análisis de Secuencias de Viajes entre Geocercas Específicas
+Versión 2025-01-31 – Dashboard simplificado para:
+• Visualización de secuencias de viajes entre geocercas específicas
+• Análisis de patrones de movimiento entre instalaciones
+• Eliminación de métricas operacionales complejas
+• Enfoque en secuencias origen-destino
 """
 
 import streamlit as st
@@ -21,8 +20,8 @@ from sklearn.cluster import DBSCAN
 import re
 
 st.set_page_config(
-    page_title="⛏️ T-Metal – BI Operacional + Tiempos de Viaje",
-    page_icon="⛏️",
+    page_title="🚛 T-Metal – Análisis de Secuencias de Viajes",
+    page_icon="🚛",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -34,11 +33,9 @@ MIN_ESTANCIA_S      = 3  # Ajustado para datos de prueba (era 60)
 SHIFT_DAY_START     = time(8, 0)
 SHIFT_NIGHT_START   = time(20, 0)
 
-# Dominios dinámicos
-STOCKS: set[str]    = set()
-MODULES: set[str]   = set()
-BOTADEROS: set[str] = set()
-PILAS_ROM: set[str] = set()
+# Geocercas específicas para análisis
+GEOCERCAS_ESPECIFICAS: set[str] = set()
+GEOCERCAS_EXCLUIDAS: set[str] = set()
 
 # ─────────────────────────────────────────────────────────────
 # Funciones copiadas de app6
@@ -97,108 +94,54 @@ def preparar_datos(df: pd.DataFrame) -> pd.DataFrame:
     df["Nombre del Vehículo"] = df["Nombre del Vehículo"].astype(str)
     return df.sort_values(["Nombre del Vehículo", "Tiempo de evento"])
 
-def normalizar_geocerca(geocerca_original: str) -> str:
-    """
-    Normaliza las geocercas según las reglas específicas:
-    - Maneja celdas con múltiples geocercas separadas por ';'
-    - 'stock central' se normaliza a 'Stock Central - 30 km hr'
-    - Geocercas que empiecen con 'Ruta' o 'Camino' se normalizan a vacío
-    - Selecciona la geocerca más relevante cuando hay múltiples
-    """
-    if not geocerca_original or geocerca_original.strip() == "":
-        return ""
-    
-    # Si hay múltiples geocercas separadas por ';', procesarlas individualmente
-    if ';' in geocerca_original:
-        geocercas_individuales = [g.strip() for g in geocerca_original.split(';') if g.strip()]
-        
-        # Procesar cada geocerca individualmente
-        geocercas_procesadas = []
-        for geo in geocercas_individuales:
-            geo_procesada = procesar_geocerca_individual(geo)
-            if geo_procesada:  # Solo agregar si no es vacía
-                geocercas_procesadas.append(geo_procesada)
-        
-        # Seleccionar la geocerca más relevante
-        return seleccionar_geocerca_prioritaria(geocercas_procesadas)
-    
-    # Si es una sola geocerca, procesarla directamente
-    return procesar_geocerca_individual(geocerca_original)
-
-def procesar_geocerca_individual(geocerca: str) -> str:
-    """Procesa una geocerca individual aplicando las reglas de normalización."""
-    if not geocerca or geocerca.strip() == "":
-        return ""
-    
-    geocerca_norm = normalizar(geocerca.strip())
-    
-    # Regla 1: stock central == Stock Central - 30 km hr
-    if geocerca_norm == "stock central":
-        return "Stock Central - 30 km hr"
-    
-    # Regla 2: Geocercas que empiecen con 'Ruta' o 'Camino' = vacío
-    if (geocerca_norm.startswith("ruta ") or 
-        geocerca_norm.startswith("camino ") or
-        geocerca_norm.startswith("ruta")):
-        return ""
-    
-    # Para las demás, devolver la geocerca original
-    return geocerca.strip()
-
-def seleccionar_geocerca_prioritaria(geocercas_procesadas: list) -> str:
-    """
-    Selecciona la geocerca más prioritaria de una lista de geocercas procesadas.
-    Prioridad:
-    1. Geocercas operacionales (stocks, modules, pilas_rom, botaderos)
-    2. Geocercas específicas conocidas
-    3. La primera geocerca válida
-    """
-    if not geocercas_procesadas:
-        return ""
-    
-    if len(geocercas_procesadas) == 1:
-        return geocercas_procesadas[0]
-    
-    # Definir prioridades basadas en palabras clave operacionales
-    prioridades_operacionales = ["stock", "modulo", "módulo", "pila", "botadero"]
-    
-    # Buscar geocercas operacionales
-    for geo in geocercas_procesadas:
-        geo_norm = normalizar(geo)
-        for prioridad in prioridades_operacionales:
-            if prioridad in geo_norm:
-                return geo
-    
-    # Si no hay geocercas operacionales, devolver la primera válida
-    return geocercas_procesadas[0]
-
 def poblar_dominios(df: pd.DataFrame) -> None:
-    """Detecta automáticamente los dominios de geocercas con normalización mejorada."""
-    global STOCKS, MODULES, BOTADEROS, PILAS_ROM
+    """Define las geocercas específicas para el análisis de secuencias de viajes."""
+    global GEOCERCAS_ESPECIFICAS, GEOCERCAS_EXCLUIDAS
     
-    # Aplicar normalización a todas las geocercas
-    geocercas_originales = set(df["Geocercas"].unique()) - {""}
-    geos = set()
+    # Geocercas específicas para análisis de secuencias
+    GEOCERCAS_ESPECIFICAS = {
+        "Ciudad Mejillones",
+        "Oxiquim", 
+        "Puerto Mejillones",
+        "Terquim",
+        "Interacid",
+        "Puerto Angamos",
+        "TGN",
+        "GNLM",
+        "Muelle Centinela"
+    }
     
-    for geo_orig in geocercas_originales:
-        geo_normalizada = normalizar_geocerca(geo_orig)
-        if geo_normalizada:  # Solo agregar si no es vacía
-            geos.add(geo_normalizada)
+    # Geocercas que deben ser excluidas del análisis (rutas, etc.)
+    GEOCERCAS_EXCLUIDAS = {
+        "Ruta - Afta Mejillones"
+    }
     
-    STOCKS = {g for g in geos if "stock" in normalizar(g)}
-    MODULES = {g for g in geos if "modulo" in normalizar(g) or "módulo" in normalizar(g)}
-    BOTADEROS = {g for g in geos if "botadero" in normalizar(g)}
-    PILAS_ROM = {g for g in geos if "pila" in normalizar(g) and "rom" in normalizar(g)}
+    # Normalizar nombres para detección robusta
+    geos_detectadas = set(df["Geocercas"].unique()) - {""}
+    geos_normalizadas = {normalizar(geo) for geo in geos_detectadas}
     
-    # Detectar instalaciones de faena
-    INSTALACIONES_FAENA = {g for g in geos if "instalacion" in normalizar(g) or "faena" in normalizar(g)}
-    CASINO = {g for g in geos if "casino" in normalizar(g)}
-    # Geocercas no operacionales (cualquier viaje hacia/desde estas es clasificado como "otro")
-    GEOCERCAS_NO_OPERACIONALES = INSTALACIONES_FAENA | CASINO
+    # Mapear geocercas detectadas a las específicas
+    geocercas_encontradas = set()
+    geocercas_excluidas_encontradas = set()
     
-    globals()["INSTALACIONES_FAENA"] = INSTALACIONES_FAENA
-    globals()["CASINO"] = CASINO
-    globals()["GEOCERCAS_NO_OPERACIONALES"] = GEOCERCAS_NO_OPERACIONALES
+    for geo in geos_detectadas:
+        geo_norm = normalizar(geo)
+        
+        # Verificar si es una geocerca excluida
+        for geocerca_excluida in GEOCERCAS_EXCLUIDAS:
+            if normalizar(geocerca_excluida) in geo_norm or geo_norm in normalizar(geocerca_excluida):
+                geocercas_excluidas_encontradas.add(geocerca_excluida)
+                break
+        else:
+            # Si no es excluida, verificar si es específica
+            for geocerca_esp in GEOCERCAS_ESPECIFICAS:
+                if normalizar(geocerca_esp) in geo_norm or geo_norm in normalizar(geocerca_esp):
+                    geocercas_encontradas.add(geocerca_esp)
+                    break
+    
+    globals()["GEOCERCAS_ENCONTRADAS"] = geocercas_encontradas
+    globals()["GEOCERCAS_NO_ENCONTRADAS"] = GEOCERCAS_ESPECIFICAS - geocercas_encontradas
+    globals()["GEOCERCAS_EXCLUIDAS_ENCONTRADAS"] = geocercas_excluidas_encontradas
 
 def extraer_transiciones(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -223,11 +166,10 @@ def extraer_transiciones(df: pd.DataFrame) -> pd.DataFrame:
         tiempo_entrada_actual = None
         
         for i, row in g.iterrows():
-            geo_original = str(row["Geocercas"]).strip()
-            geo = normalizar_geocerca(geo_original)  # Aplicar normalización
+            geo = str(row["Geocercas"]).strip()
             tiempo = row["Tiempo de evento"]
             
-            if geo != "":  # Registro en geocerca (después de normalización)
+            if geo != "":  # Registro en geocerca
                 if geocerca_actual != geo:
                     # Cambio de geocerca o primera geocerca
                     if geocerca_actual is not None:
@@ -300,12 +242,11 @@ def extraer_transiciones(df: pd.DataFrame) -> pd.DataFrame:
 
 def clasificar_proceso_con_secuencia(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Clasifica procesos considerando secuencias temporales:
-    - Carga: Stock → Módulo/Pila ROM
-    - Descarga: Módulo/Pila ROM → Botadero
-    - Retorno: Botadero → Módulo/Pila ROM (después de descarga)
-    - Retorno: Módulo/Pila ROM → Stock (después de carga)
-    - Otros: Cualquier otra combinación
+    Clasifica secuencias de viajes entre geocercas específicas:
+    - viaje_especifico: Ambos origen y destino están en geocercas específicas
+    - viaje_parcial: Solo uno de origen o destino está en geocercas específicas
+    - estadia_interna: Origen y destino son la misma geocerca (auto-transición)
+    - otro: Movimientos que no involucran geocercas específicas o involucran geocercas excluidas
     """
     if df.empty:
         return df
@@ -313,8 +254,9 @@ def clasificar_proceso_con_secuencia(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["Nombre del Vehículo", "Tiempo_entrada"]).copy()
     df["Proceso"] = "otro"  # Inicializar todos como "otro"
 
-    # Obtener geocercas no operacionales del contexto global
-    GEOCERCAS_NO_OPERACIONALES = globals().get("GEOCERCAS_NO_OPERACIONALES", set())
+    # Obtener geocercas específicas y excluidas del contexto global
+    GEOCERCAS_ESPECIFICAS = globals().get("GEOCERCAS_ESPECIFICAS", set())
+    GEOCERCAS_EXCLUIDAS = globals().get("GEOCERCAS_EXCLUIDAS", set())
 
     # Procesar cada vehículo por separado
     grupos_procesados = []
@@ -326,40 +268,30 @@ def clasificar_proceso_con_secuencia(df: pd.DataFrame) -> pd.DataFrame:
             origen = grupo.loc[i, "Origen"]
             destino = grupo.loc[i, "Destino"]
 
-            # 🏭 PRIORIDAD ALTA: Movimientos que involucran geocercas no operacionales son "otros"
-            if origen in GEOCERCAS_NO_OPERACIONALES or destino in GEOCERCAS_NO_OPERACIONALES:
+            # Si origen y destino son la misma geocerca, es una estadía interna
+            if origen == destino:
+                grupo.loc[i, "Proceso"] = "estadia_interna"
+                continue
+
+            # Verificar si origen o destino están en geocercas excluidas
+            origen_excluido = any(geocerca_excluida in origen for geocerca_excluida in GEOCERCAS_EXCLUIDAS)
+            destino_excluido = any(geocerca_excluida in destino for geocerca_excluida in GEOCERCAS_EXCLUIDAS)
+            
+            # Si alguno está excluido, marcar como "otro"
+            if origen_excluido or destino_excluido:
                 grupo.loc[i, "Proceso"] = "otro"
                 continue
 
-            # 1. CARGA: Stock → Módulo/Pila ROM
-            if origen in STOCKS and (destino in MODULES or destino in PILAS_ROM):
-                grupo.loc[i, "Proceso"] = "carga"
-                continue
-
-            # 2. DESCARGA: Módulo/Pila ROM → Botadero
-            if (origen in MODULES or origen in PILAS_ROM) and destino in BOTADEROS:
-                grupo.loc[i, "Proceso"] = "descarga"
-                continue
-
-            # 3. RETORNO: Botadero → Módulo/Pila ROM (después de descarga)
-            if origen in BOTADEROS and (destino in MODULES or destino in PILAS_ROM):
-                if i > 0:
-                    viaje_anterior = grupo.loc[i-1, "Proceso"]
-                    if viaje_anterior == "descarga":
-                        grupo.loc[i, "Proceso"] = "retorno"
-                        continue
+            # Verificar si ambos origen y destino están en geocercas específicas
+            origen_especifico = any(geocerca_esp in origen for geocerca_esp in GEOCERCAS_ESPECIFICAS)
+            destino_especifico = any(geocerca_esp in destino for geocerca_esp in GEOCERCAS_ESPECIFICAS)
+            
+            if origen_especifico and destino_especifico:
+                grupo.loc[i, "Proceso"] = "viaje_especifico"
+            elif origen_especifico or destino_especifico:
+                grupo.loc[i, "Proceso"] = "viaje_parcial"
+            else:
                 grupo.loc[i, "Proceso"] = "otro"
-                continue
-
-            # 4. RETORNO: Módulo/Pila ROM → Stock (después de carga)
-            if (origen in MODULES or origen in PILAS_ROM) and destino in STOCKS:
-                if i > 0:
-                    viaje_anterior = grupo.loc[i-1, "Proceso"]
-                    if viaje_anterior == "carga":
-                        grupo.loc[i, "Proceso"] = "retorno"
-                        continue
-                grupo.loc[i, "Proceso"] = "otro"
-                continue
 
         grupos_procesados.append(grupo)
 
@@ -368,184 +300,78 @@ def clasificar_proceso_con_secuencia(df: pd.DataFrame) -> pd.DataFrame:
     else:
         return df
 
-def analizar_detenciones_anomalas(df: pd.DataFrame, trans: pd.DataFrame) -> pd.DataFrame:
+def consolidar_estadias_internas(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Analiza detenciones anómalas dentro de geocercas basándose en:
-    - Velocidad promedio muy baja (< 2 km/h) por períodos prolongados
-    - Tiempo de permanencia superior al promedio + 2 desviaciones estándar
-    - Detecciones dentro de geocercas operacionales
-    
-    Supuestos establecidos:
-    1. Detención = velocidad < 2 km/h por más de 10 minutos consecutivos
-    2. Anómala = duración > promedio + 2σ de la geocerca específica
-    3. Solo se analizan geocercas operacionales (stocks, modules, pilas_rom, botaderos)
-    4. Se excluyen detenciones normales de carga/descarga (< 30 min)
+    Consolida las estadías internas (auto-transiciones) con el viaje válido anterior.
+    Por ejemplo: si hay un viaje "Ciudad Mejillones -> TGN" seguido de varias "TGN -> TGN",
+    se consolida todo como una estadía extendida en TGN.
     """
-    if df.empty or trans.empty:
-        return pd.DataFrame()
-    
-    detenciones_anomalas = []
-    
-    # Obtener dominios globales
-    STOCKS = globals().get("STOCKS", set())
-    MODULES = globals().get("MODULES", set()) 
-    BOTADEROS = globals().get("BOTADEROS", set())
-    PILAS_ROM = globals().get("PILAS_ROM", set())
-    geocercas_operacionales = STOCKS | MODULES | BOTADEROS | PILAS_ROM
-    
-    if not geocercas_operacionales:
-        return pd.DataFrame()
-    
-    # Calcular estadísticas de permanencia por geocerca
-    trans_operacionales = trans[trans["Origen"].isin(geocercas_operacionales)].copy()
-    if trans_operacionales.empty:
-        return pd.DataFrame()
-    
-    estadisticas_geocercas = trans_operacionales.groupby("Origen")["Duracion_s"].agg([
-        "mean", "std", "count", "median"
-    ]).reset_index()
-    estadisticas_geocercas["umbral_anomalo"] = (
-        estadisticas_geocercas["mean"] + 2 * estadisticas_geocercas["std"]
-    )
-    
-    # Procesar cada vehículo
-    for veh, g in df.groupby("Nombre del Vehículo"):
-        g = g.copy().sort_values("Tiempo de evento")
-        
-        # Aplicar normalización de geocercas
-        g["Geocercas_norm"] = g["Geocercas"].apply(normalizar_geocerca)
-        
-        # Verificar si hay columna de velocidad
-        velocidad_disponible = "Velocidad [km/h]" in g.columns
-        
-        # Identificar períodos en geocercas operacionales
-        geocerca_actual = None
-        tiempo_entrada_actual = None
-        registros_geocerca = []
-        
-        for i, row in g.iterrows():
-            geo = row["Geocercas_norm"]
-            tiempo = row["Tiempo de evento"]
-            velocidad = row.get("Velocidad [km/h]", 0) if velocidad_disponible else 0
-            
-            if geo != "" and geo in geocercas_operacionales:
-                if geocerca_actual != geo:
-                    # Procesar geocerca anterior si existe
-                    if geocerca_actual is not None and registros_geocerca:
-                        detenciones_anomalas.extend(
-                            _analizar_detenciones_en_geocerca(
-                                veh, geocerca_actual, tiempo_entrada_actual,
-                                registros_geocerca, estadisticas_geocercas, velocidad_disponible
-                            )
-                        )
-                    
-                    # Iniciar nueva geocerca
-                    geocerca_actual = geo
-                    tiempo_entrada_actual = tiempo
-                    registros_geocerca = [(tiempo, velocidad)]
-                else:
-                    # Continuar en la misma geocerca
-                    registros_geocerca.append((tiempo, velocidad))
-            else:
-                # Salida de geocerca o en viaje
-                if geocerca_actual is not None and registros_geocerca:
-                    detenciones_anomalas.extend(
-                        _analizar_detenciones_en_geocerca(
-                            veh, geocerca_actual, tiempo_entrada_actual,
-                            registros_geocerca, estadisticas_geocercas, velocidad_disponible
-                        )
-                    )
-                    geocerca_actual = None
-                    registros_geocerca = []
-        
-        # Procesar última geocerca si existe
-        if geocerca_actual is not None and registros_geocerca:
-            detenciones_anomalas.extend(
-                _analizar_detenciones_en_geocerca(
-                    veh, geocerca_actual, tiempo_entrada_actual,
-                    registros_geocerca, estadisticas_geocercas, velocidad_disponible
-                )
-            )
-    
-    if detenciones_anomalas:
-        return pd.DataFrame(detenciones_anomalas)
-    else:
-        return pd.DataFrame(columns=[
-            "Nombre del Vehículo", "Geocerca", "Tiempo_inicio", "Tiempo_fin",
-            "Duracion_total_min", "Duracion_detenido_min", "Velocidad_promedio",
-            "Tipo_anomalia", "Severidad", "Umbral_normal_min", "Exceso_min"
-        ])
+    if df.empty:
+        return df
 
-def _analizar_detenciones_en_geocerca(vehiculo: str, geocerca: str, tiempo_inicio: pd.Timestamp,
-                                     registros: list, estadisticas: pd.DataFrame, velocidad_disponible: bool) -> list:
-    """Analiza detenciones dentro de una geocerca específica."""
-    if len(registros) < 2:
-        return []
-    
-    tiempo_fin = registros[-1][0]
-    duracion_total_s = (tiempo_fin - tiempo_inicio).total_seconds()
-    duracion_total_min = duracion_total_s / 60
-    
-    # Filtrar permanencias muy cortas
-    if duracion_total_min < 10:  # Menos de 10 minutos
-        return []
-    
-    detenciones = []
-    
-    # Obtener umbral normal para esta geocerca
-    umbral_info = estadisticas[estadisticas["Origen"] == geocerca]
-    if umbral_info.empty:
-        umbral_normal_min = 30  # Default 30 minutos
-        umbral_anomalo_min = 60  # Default 60 minutos
-    else:
-        umbral_normal_min = umbral_info["mean"].iloc[0] / 60
-        umbral_anomalo_min = umbral_info["umbral_anomalo"].iloc[0] / 60
-    
-    # Análisis de velocidad si está disponible
-    if velocidad_disponible:
-        velocidades = [v for _, v in registros]
-        velocidad_promedio = sum(velocidades) / len(velocidades) if velocidades else 0
+    df = df.sort_values(["Nombre del Vehículo", "Tiempo_entrada"]).copy()
+    grupos_consolidados = []
+
+    for veh, grupo in df.groupby("Nombre del Vehículo"):
+        grupo = grupo.copy().sort_values("Tiempo_entrada").reset_index(drop=True)
+        registros_finales = []
         
-        # Contar tiempo detenido (velocidad < 2 km/h)
-        tiempos_detenido = []
-        for i in range(len(registros) - 1):
-            if registros[i][1] < 2:  # Velocidad < 2 km/h
-                duracion_segmento = (registros[i+1][0] - registros[i][0]).total_seconds() / 60
-                tiempos_detenido.append(duracion_segmento)
+        i = 0
+        while i < len(grupo):
+            registro_actual = grupo.iloc[i].copy()
+            
+            # Si es una estadía interna, buscar el viaje válido anterior
+            if registro_actual["Proceso"] == "estadia_interna":
+                # Buscar el último viaje válido anterior (viaje_especifico o viaje_parcial)
+                viaje_anterior_idx = None
+                for j in range(i - 1, -1, -1):
+                    if grupo.iloc[j]["Proceso"] in ["viaje_especifico", "viaje_parcial"]:
+                        viaje_anterior_idx = j
+                        break
+                
+                if viaje_anterior_idx is not None:
+                    # Extender el viaje anterior con esta estadía interna
+                    registros_finales[viaje_anterior_idx]["Tiempo_salida"] = registro_actual["Tiempo_salida"]
+                    registros_finales[viaje_anterior_idx]["Duracion_s"] = (
+                        registros_finales[viaje_anterior_idx]["Tiempo_salida"] - 
+                        registros_finales[viaje_anterior_idx]["Tiempo_entrada"]
+                    ).total_seconds()
+                    
+                    # Agregar información sobre la estadía interna consolidada
+                    if "Estadias_Consolidadas" not in registros_finales[viaje_anterior_idx]:
+                        registros_finales[viaje_anterior_idx]["Estadias_Consolidadas"] = 0
+                    registros_finales[viaje_anterior_idx]["Estadias_Consolidadas"] += 1
+                    
+                    # Buscar más estadías internas consecutivas
+                    k = i + 1
+                    while k < len(grupo) and grupo.iloc[k]["Proceso"] == "estadia_interna":
+                        estadia_adicional = grupo.iloc[k]
+                        registros_finales[viaje_anterior_idx]["Tiempo_salida"] = estadia_adicional["Tiempo_salida"]
+                        registros_finales[viaje_anterior_idx]["Duracion_s"] = (
+                            registros_finales[viaje_anterior_idx]["Tiempo_salida"] - 
+                            registros_finales[viaje_anterior_idx]["Tiempo_entrada"]
+                        ).total_seconds()
+                        registros_finales[viaje_anterior_idx]["Estadias_Consolidadas"] += 1
+                        k += 1
+                    
+                    i = k  # Saltar todas las estadías internas procesadas
+                else:
+                    # No hay viaje válido anterior, mantener como estadía interna
+                    registros_finales.append(registro_actual)
+                    i += 1
+            else:
+                # No es estadía interna, agregar normalmente
+                registros_finales.append(registro_actual)
+                i += 1
         
-        duracion_detenido_min = sum(tiempos_detenido)
+        if registros_finales:
+            grupo_consolidado = pd.DataFrame(registros_finales)
+            grupos_consolidados.append(grupo_consolidado)
+
+    if grupos_consolidados:
+        return pd.concat(grupos_consolidados, ignore_index=True)
     else:
-        velocidad_promedio = 0
-        duracion_detenido_min = duracion_total_min  # Asumir todo el tiempo detenido si no hay datos de velocidad
-    
-    # Determinar si es anómalo
-    tipo_anomalia = None
-    severidad = "Normal"
-    
-    if duracion_total_min > umbral_anomalo_min:
-        if duracion_detenido_min > umbral_normal_min * 1.5:
-            tipo_anomalia = "Detención Prolongada"
-            severidad = "Alta" if duracion_total_min > umbral_anomalo_min * 1.5 else "Media"
-        elif velocidad_promedio < 1 and duracion_total_min > umbral_normal_min * 1.2:
-            tipo_anomalia = "Velocidad Anómala"
-            severidad = "Media"
-    
-    if tipo_anomalia:
-        detenciones.append({
-            "Nombre del Vehículo": vehiculo,
-            "Geocerca": geocerca,
-            "Tiempo_inicio": tiempo_inicio,
-            "Tiempo_fin": tiempo_fin,
-            "Duracion_total_min": round(duracion_total_min, 1),
-            "Duracion_detenido_min": round(duracion_detenido_min, 1),
-            "Velocidad_promedio": round(velocidad_promedio, 2),
-            "Tipo_anomalia": tipo_anomalia,
-            "Severidad": severidad,
-            "Umbral_normal_min": round(umbral_normal_min, 1),
-            "Exceso_min": round(duracion_total_min - umbral_normal_min, 1)
-        })
-    
-    return detenciones
+        return df
 
 def extraer_tiempos_viaje(df: pd.DataFrame) -> pd.DataFrame:
     """Extrae tiempos de viaje cuando la geocerca está vacía."""
@@ -555,9 +381,8 @@ def extraer_tiempos_viaje(df: pd.DataFrame) -> pd.DataFrame:
     for veh, g in df.groupby("Nombre del Vehículo"):
         g = g.copy().sort_values("Tiempo de evento").reset_index(drop=True)
         
-        # Aplicar normalización de geocercas y identificar grupos de registros consecutivos en viaje
-        g["Geocercas_norm"] = g["Geocercas"].apply(normalizar_geocerca)
-        g["es_viaje"] = g["Geocercas_norm"] == ""
+        # Identificar grupos de registros consecutivos en viaje (geocerca vacía)
+        g["es_viaje"] = g["Geocercas"] == ""
         g["grupo_viaje"] = (g["es_viaje"] != g["es_viaje"].shift()).cumsum()
         
         # Procesar solo grupos que son viajes
@@ -583,20 +408,20 @@ def extraer_tiempos_viaje(df: pd.DataFrame) -> pd.DataFrame:
             # Buscar hacia atrás en todo el DataFrame del vehículo
             registros_anteriores = g[g.index < idx_inicio_grupo]
             if not registros_anteriores.empty:
-                # Buscar el último registro con geocerca no vacía (después de normalización)
-                geocercas_anteriores = registros_anteriores[registros_anteriores["Geocercas_norm"] != ""]
+                # Buscar el último registro con geocerca no vacía
+                geocercas_anteriores = registros_anteriores[registros_anteriores["Geocercas"] != ""]
                 if not geocercas_anteriores.empty:
-                    origen = geocercas_anteriores["Geocercas_norm"].iloc[-1]
+                    origen = geocercas_anteriores["Geocercas"].iloc[-1]
             
             # Buscar geocerca posterior (destino) - búsqueda más amplia  
             destino = "DESCONOCIDO"
             # Buscar hacia adelante en todo el DataFrame del vehículo
             registros_posteriores = g[g.index > idx_fin_grupo]
             if not registros_posteriores.empty:
-                # Buscar el primer registro con geocerca no vacía (después de normalización)
-                geocercas_posteriores = registros_posteriores[registros_posteriores["Geocercas_norm"] != ""]
+                # Buscar el primer registro con geocerca no vacía
+                geocercas_posteriores = registros_posteriores[registros_posteriores["Geocercas"] != ""]
                 if not geocercas_posteriores.empty:
-                    destino = geocercas_posteriores["Geocercas_norm"].iloc[0]
+                    destino = geocercas_posteriores["Geocercas"].iloc[0]
             
             # Contar casos desconocidos para diagnóstico
             if origen == "DESCONOCIDO" and destino == "DESCONOCIDO":
@@ -645,10 +470,10 @@ def construir_analisis_horario(trans_filtradas: pd.DataFrame) -> tuple[pd.DataFr
     if trans_filtradas.empty:
         return pd.DataFrame(), pd.DataFrame()
     
-    # Filtrar solo viajes de producción (carga/descarga)
-    viajes_produccion = trans_filtradas[trans_filtradas["Proceso"].isin(["carga", "descarga"])].copy()
+    # Filtrar solo viajes válidos (específicos y parciales)
+    viajes_validos = trans_filtradas[trans_filtradas["Proceso"].isin(["viaje_especifico", "viaje_parcial"])].copy()
     
-    if viajes_produccion.empty:
+    if viajes_validos.empty:
         return pd.DataFrame(), pd.DataFrame()
     
     # Crear columnas de hora, fecha y descripción de turno
@@ -995,7 +820,7 @@ def crear_mapa_calor(df: pd.DataFrame, zonas_candidatas: pd.DataFrame) -> folium
 # ─────────────────────────────────────────────────────────────
 # Interfaz Streamlit Reorganizada
 # ─────────────────────────────────────────────────────────────
-st.header("📤 Carga de archivo CSV – Eventos GPS + Análisis de Tiempos de Viaje")
+st.header("📤 Carga de archivo CSV – Análisis de Secuencias de Viajes entre Geocercas Específicas")
 archivo = st.file_uploader("Selecciona el CSV exportado desde GeoAustral", type=["csv"])
 
 if archivo:
@@ -1014,81 +839,76 @@ if archivo:
     # Clasificar procesos
     trans_inicial = clasificar_proceso_con_secuencia(trans_inicial)
     
-    # ─── SECCIÓN 1: Geocercas Detectadas ────────────────────────
-    st.subheader("🏭 Geocercas Detectadas Automáticamente")
+    # Consolidar estadías internas (auto-transiciones)
+    trans_inicial = consolidar_estadias_internas(trans_inicial)
     
-    col1, col2 = st.columns(2)
+    # ─── SECCIÓN 1: Geocercas Específicas ────────────────────────
+    st.subheader("🏭 Geocercas Específicas para Análisis de Secuencias")
+    
+    GEOCERCAS_ESPECIFICAS = globals().get("GEOCERCAS_ESPECIFICAS", set())
+    GEOCERCAS_ENCONTRADAS = globals().get("GEOCERCAS_ENCONTRADAS", set())
+    GEOCERCAS_NO_ENCONTRADAS = globals().get("GEOCERCAS_NO_ENCONTRADAS", set())
+    GEOCERCAS_EXCLUIDAS = globals().get("GEOCERCAS_EXCLUIDAS", set())
+    GEOCERCAS_EXCLUIDAS_ENCONTRADAS = globals().get("GEOCERCAS_EXCLUIDAS_ENCONTRADAS", set())
+    
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.markdown("**📦 Stocks:**")
-        if STOCKS:
-            for stock in sorted(STOCKS):
-                st.write(f"• {stock}")
+        st.markdown("**✅ Geocercas Encontradas en Datos:**")
+        if GEOCERCAS_ENCONTRADAS:
+            for geocerca in sorted(GEOCERCAS_ENCONTRADAS):
+                st.write(f"• {geocerca}")
         else:
-            st.write("Ninguna detectada")
-        
-        st.markdown("**🏗️ Módulos:**")
-        if MODULES:
-            for modulo in sorted(MODULES):
-                st.write(f"• {modulo}")
-        else:
-            st.write("Ninguno detectado")
-        
-        st.markdown("**🗑️ Botaderos:**")
-        if BOTADEROS:
-            for botadero in sorted(BOTADEROS):
-                st.write(f"• {botadero}")
-        else:
-            st.write("Ninguno detectado")
+            st.write("Ninguna encontrada")
     
     with col2:
-        st.markdown("**🪨 Pilas ROM:**")
-        if PILAS_ROM:
-            for pila in sorted(PILAS_ROM):
-                st.write(f"• {pila}")
+        st.markdown("**❌ Geocercas No Encontradas:**")
+        if GEOCERCAS_NO_ENCONTRADAS:
+            for geocerca in sorted(GEOCERCAS_NO_ENCONTRADAS):
+                st.write(f"• {geocerca}")
         else:
-            st.write("Ninguna detectada")
-        
-        st.markdown("**🏭 Instalaciones de Faena:**")
-        INSTALACIONES_FAENA = globals().get("INSTALACIONES_FAENA", set())
-        if INSTALACIONES_FAENA:
-            for instalacion in sorted(INSTALACIONES_FAENA):
-                st.write(f"• {instalacion}")
+            st.write("Todas las geocercas fueron encontradas")
+    
+    with col3:
+        st.markdown("**🚫 Geocercas Excluidas (Rutas):**")
+        if GEOCERCAS_EXCLUIDAS_ENCONTRADAS:
+            for geocerca in sorted(GEOCERCAS_EXCLUIDAS_ENCONTRADAS):
+                st.write(f"• {geocerca}")
         else:
-            st.write("Ninguna detectada")
-        
-        st.markdown("**🍽️ Casino:**")
-        CASINO = globals().get("CASINO", set())
-        if CASINO:
-            for casino in sorted(CASINO):
-                st.write(f"• {casino}")
-        else:
-            st.write("Ninguna detectada")
+            st.write("Ninguna encontrada")
     
-    # Mostrar geocercas no clasificadas (usando geocercas normalizadas)
-    GEOCERCAS_NO_OPERACIONALES = globals().get("GEOCERCAS_NO_OPERACIONALES", set())
-    geocercas_clasificadas = STOCKS | MODULES | BOTADEROS | PILAS_ROM | GEOCERCAS_NO_OPERACIONALES
+    # Mostrar estadísticas de detección
+    total_geocercas = len(GEOCERCAS_ESPECIFICAS)
+    encontradas = len(GEOCERCAS_ENCONTRADAS)
+    porcentaje = (encontradas / total_geocercas * 100) if total_geocercas > 0 else 0
     
-    # Aplicar normalización a todas las geocercas originales para verificar clasificación
-    geocercas_originales = set(df["Geocercas"].unique()) - {""}
-    geocercas_normalizadas_encontradas = set()
-    geocercas_no_clasificadas = set()
+    st.info(f"""
+    **📊 Estadísticas de Detección:**
+    - Total de geocercas específicas: {total_geocercas}
+    - Geocercas encontradas: {encontradas}
+    - Geocercas no encontradas: {len(GEOCERCAS_NO_ENCONTRADAS)}
+    - Geocercas excluidas encontradas: {len(GEOCERCAS_EXCLUIDAS_ENCONTRADAS)}
+    - Porcentaje de detección: {porcentaje:.1f}%
+    """)
     
-    for geo_orig in geocercas_originales:
-        geo_normalizada = normalizar_geocerca(geo_orig)
-        if geo_normalizada:  # Si la geocerca normalizada no está vacía
-            geocercas_normalizadas_encontradas.add(geo_normalizada)
-            if geo_normalizada not in geocercas_clasificadas:
-                geocercas_no_clasificadas.add(geo_orig)  # Mostrar la original para referencia
-        # Si geo_normalizada está vacía (rutas/caminos), no se considera "no clasificada"
-    
-    if geocercas_no_clasificadas:
+    if GEOCERCAS_NO_ENCONTRADAS:
         st.warning(f"""
-        **❓ Geocercas No Clasificadas ({len(geocercas_no_clasificadas)}):**
-        {', '.join(sorted(geocercas_no_clasificadas))}
+        **⚠️ Geocercas no encontradas en los datos:**
+        {', '.join(sorted(GEOCERCAS_NO_ENCONTRADAS))}
+        
+        Esto puede deberse a:
+        - Diferencias en el nombre exacto de las geocercas
+        - Geocercas que no están presentes en el período de datos
+        - Errores de ortografía o formato en los nombres
         """)
-    else:
-        st.success("✅ Todas las geocercas fueron clasificadas correctamente")
+    
+    if GEOCERCAS_EXCLUIDAS_ENCONTRADAS:
+        st.info(f"""
+        **ℹ️ Geocercas excluidas del análisis (rutas):**
+        {', '.join(sorted(GEOCERCAS_EXCLUIDAS_ENCONTRADAS))}
+        
+        Estas geocercas representan rutas y no se consideran como destinos válidos para el análisis de secuencias de viajes.
+        """)
 
     # ─── SECCIÓN 2: Filtros ────────────────────────
     st.subheader("🔍 Filtros de Análisis")
@@ -1108,20 +928,13 @@ if archivo:
         veh_sel = st.selectbox("Vehículo", veh_opts)
     
     with col3:
-        # Filtro de turno
-        turno_opts = ["Todos", "Día", "Noche"]
-        turno_sel = st.selectbox("Turno", turno_opts)
+        st.write("")  # Espacio vacío para mantener layout
     
     with col4:
-        # Filtro de geocerca origen
-        todas_geocercas = sorted(set(df["Geocercas"].unique()) - {""})
-        origen_opts = ["Todas"] + todas_geocercas
-        origen_sel = st.selectbox("Geocerca Origen", origen_opts)
+        st.write("")  # Espacio vacío para mantener layout
     
     with col5:
-        # Filtro de geocerca destino
-        destino_opts = ["Todas"] + todas_geocercas
-        destino_sel = st.selectbox("Geocerca Destino", destino_opts)
+        st.write("")  # Espacio vacío para mantener layout
 
     # ─── FILTRO ADICIONAL: Rango de Horas ────────────────────────
     st.markdown("**⏰ Filtro por Rango de Horas:**")
@@ -1172,35 +985,45 @@ if archivo:
     if veh_sel != "Todos":
         df_filtrado = df_filtrado[df_filtrado["Nombre del Vehículo"] == veh_sel]
     
-    if turno_sel != "Todos":
-        turno_filter = "dia" if turno_sel == "Día" else "noche"
-        df_filtrado = df_filtrado[df_filtrado["Tiempo de evento"].apply(turno) == turno_filter]
-    
     # Procesar datos filtrados
     trans = extraer_transiciones(df_filtrado)
     viajes = extraer_tiempos_viaje(df_filtrado)
     
     if not trans.empty:
         trans = clasificar_proceso_con_secuencia(trans)
+        # Consolidar estadías internas (auto-transiciones)
+        trans = consolidar_estadias_internas(trans)
     
-    # Filtrar transiciones por origen y destino
+    # Filtrar transiciones (sin filtros de origen/destino específicos)
     trans_filtradas = trans.copy()
-    if not trans_filtradas.empty:
-        if origen_sel != "Todas":
-            trans_filtradas = trans_filtradas[trans_filtradas["Origen"] == origen_sel]
-        if destino_sel != "Todas":
-            trans_filtradas = trans_filtradas[trans_filtradas["Destino"] == destino_sel]
 
-    # ─── SECCIÓN 3: Matriz de Viajes de Carga/Descarga ────────────────────────
-    st.subheader("📊 Matriz de Viajes de Producción (Carga/Descarga)")
+    # ─── SECCIÓN 3: Matriz de Secuencias de Viajes ────────────────────────
+    st.subheader("📊 Matriz de Secuencias de Viajes entre Geocercas Específicas")
+    
+    # Mostrar información sobre consolidación de estadías internas
+    if not trans_filtradas.empty:
+        viajes_con_consolidacion = trans_filtradas[trans_filtradas["Proceso"].isin(["viaje_especifico", "viaje_parcial"])]
+        if "Estadias_Consolidadas" in viajes_con_consolidacion.columns:
+            total_consolidaciones = viajes_con_consolidacion["Estadias_Consolidadas"].sum()
+            viajes_con_consolidacion_count = len(viajes_con_consolidacion[viajes_con_consolidacion["Estadias_Consolidadas"] > 0])
+            
+            if total_consolidaciones > 0:
+                st.info(f"""
+                **🔄 Estadías Internas Consolidadas:**
+                - Total de estadías internas consolidadas: {total_consolidaciones}
+                - Viajes que incluyen estadías consolidadas: {viajes_con_consolidacion_count}
+                - Promedio de estadías por viaje consolidado: {total_consolidaciones/viajes_con_consolidacion_count:.1f}
+                
+                *Las auto-transiciones (ej: TGN→TGN) se han consolidado con el viaje válido anterior, extendiendo la duración de la estadía en el destino.*
+                """)
     
     if not trans_filtradas.empty:
-        viajes_produccion = trans_filtradas[trans_filtradas["Proceso"].isin(["carga", "descarga"])].copy()
+        viajes_especificos = trans_filtradas[trans_filtradas["Proceso"].isin(["viaje_especifico", "viaje_parcial"])].copy()
         
-        if not viajes_produccion.empty:
+        if not viajes_especificos.empty:
             # Preparar columnas adicionales para análisis temporal
-            viajes_produccion["Fecha_str"] = viajes_produccion["Fecha_Turno"].dt.strftime("%d/%m/%Y")
-            viajes_produccion["Turno_str"] = viajes_produccion["Turno"].map({"dia": "Día", "noche": "Noche"})
+            viajes_especificos["Fecha_str"] = viajes_especificos["Fecha_Turno"].dt.strftime("%d/%m/%Y")
+            viajes_especificos["Turno_str"] = viajes_especificos["Turno"].map({"dia": "Día", "noche": "Noche"})
             
             # Tabs expandidas para mostrar diferentes matrices
             tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -1215,7 +1038,7 @@ if archivo:
                 st.markdown("**Matriz General de Viajes Origen → Destino**")
                 
                 # Crear matriz de origen-destino general
-                matriz_viajes = viajes_produccion.groupby(["Origen", "Destino", "Proceso"]).size().reset_index(name="Cantidad")
+                matriz_viajes = viajes_especificos.groupby(["Origen", "Destino", "Proceso"]).size().reset_index(name="Cantidad")
                 
                 # Pivot para mostrar como matriz
                 matriz_pivot = matriz_viajes.pivot_table(
@@ -1231,20 +1054,20 @@ if archivo:
                 # Estadísticas de la matriz general
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    total_carga = len(viajes_produccion[viajes_produccion["Proceso"] == "carga"])
-                    st.metric("Total Cargas", total_carga)
+                    total_especificos = len(viajes_especificos[viajes_especificos["Proceso"] == "viaje_especifico"])
+                    st.metric("Viajes Específicos", total_especificos)
                 with col2:
-                    total_descarga = len(viajes_produccion[viajes_produccion["Proceso"] == "descarga"])
-                    st.metric("Total Descargas", total_descarga)
+                    total_parciales = len(viajes_especificos[viajes_especificos["Proceso"] == "viaje_parcial"])
+                    st.metric("Viajes Parciales", total_parciales)
                 with col3:
-                    total_produccion = total_carga + total_descarga
-                    st.metric("Total Producción", total_produccion)
+                    total_viajes = total_especificos + total_parciales
+                    st.metric("Total Viajes", total_viajes)
             
             with tab2:
                 st.markdown("**📅 Matriz de Viajes por Fecha**")
                 
                 # Matriz agrupada por fecha
-                matriz_por_fecha = viajes_produccion.groupby(["Fecha_str", "Proceso"]).size().reset_index(name="Cantidad")
+                matriz_por_fecha = viajes_especificos.groupby(["Fecha_str", "Proceso"]).size().reset_index(name="Cantidad")
                 
                 # Pivot por fecha
                 matriz_fecha_pivot = matriz_por_fecha.pivot_table(
@@ -1256,18 +1079,18 @@ if archivo:
                 ).reset_index()
                 
                 # Agregar columna de total
-                if "carga" in matriz_fecha_pivot.columns and "descarga" in matriz_fecha_pivot.columns:
-                    matriz_fecha_pivot["Total"] = matriz_fecha_pivot["carga"] + matriz_fecha_pivot["descarga"]
-                elif "carga" in matriz_fecha_pivot.columns:
-                    matriz_fecha_pivot["Total"] = matriz_fecha_pivot["carga"]
-                elif "descarga" in matriz_fecha_pivot.columns:
-                    matriz_fecha_pivot["Total"] = matriz_fecha_pivot["descarga"]
+                if "viaje_especifico" in matriz_fecha_pivot.columns and "viaje_parcial" in matriz_fecha_pivot.columns:
+                    matriz_fecha_pivot["Total"] = matriz_fecha_pivot["viaje_especifico"] + matriz_fecha_pivot["viaje_parcial"]
+                elif "viaje_especifico" in matriz_fecha_pivot.columns:
+                    matriz_fecha_pivot["Total"] = matriz_fecha_pivot["viaje_especifico"]
+                elif "viaje_parcial" in matriz_fecha_pivot.columns:
+                    matriz_fecha_pivot["Total"] = matriz_fecha_pivot["viaje_parcial"]
                 
                 # Renombrar columnas
                 matriz_fecha_pivot = matriz_fecha_pivot.rename(columns={
                     "Fecha_str": "Fecha",
-                    "carga": "Cargas",
-                    "descarga": "Descargas"
+                    "viaje_especifico": "Viajes Específicos",
+                    "viaje_parcial": "Viajes Parciales"
                 })
                 
                 # Ordenar por fecha
@@ -1286,11 +1109,11 @@ if archivo:
                             x=alt.X("Fecha_str:N", title="Fecha", sort=None),
                             y=alt.Y("Cantidad:Q", title="Cantidad de Viajes"),
                             color=alt.Color("Proceso:N", 
-                                           scale=alt.Scale(domain=["carga", "descarga"], 
+                                           scale=alt.Scale(domain=["viaje_especifico", "viaje_parcial"], 
                                                          range=["#1f77b4", "#ff7f0e"])),
                             tooltip=["Fecha_str:N", "Proceso:N", "Cantidad:Q"]
                         )
-                        .properties(height=300, title="Viajes de Producción por Fecha")
+                        .properties(height=300, title="Secuencias de Viajes por Fecha")
                     )
                     st.altair_chart(chart_fecha, use_container_width=True)
             
@@ -1298,7 +1121,7 @@ if archivo:
                 st.markdown("**🌅 Matriz de Viajes por Turno**")
                 
                 # Matriz agrupada por turno
-                matriz_por_turno = viajes_produccion.groupby(["Turno_str", "Proceso"]).size().reset_index(name="Cantidad")
+                matriz_por_turno = viajes_especificos.groupby(["Turno_str", "Proceso"]).size().reset_index(name="Cantidad")
                 
                 # Pivot por turno
                 matriz_turno_pivot = matriz_por_turno.pivot_table(
@@ -1310,18 +1133,18 @@ if archivo:
                 ).reset_index()
                 
                 # Agregar columna de total
-                if "carga" in matriz_turno_pivot.columns and "descarga" in matriz_turno_pivot.columns:
-                    matriz_turno_pivot["Total"] = matriz_turno_pivot["carga"] + matriz_turno_pivot["descarga"]
-                elif "carga" in matriz_turno_pivot.columns:
-                    matriz_turno_pivot["Total"] = matriz_turno_pivot["carga"]
-                elif "descarga" in matriz_turno_pivot.columns:
-                    matriz_turno_pivot["Total"] = matriz_turno_pivot["descarga"]
+                if "viaje_especifico" in matriz_turno_pivot.columns and "viaje_parcial" in matriz_turno_pivot.columns:
+                    matriz_turno_pivot["Total"] = matriz_turno_pivot["viaje_especifico"] + matriz_turno_pivot["viaje_parcial"]
+                elif "viaje_especifico" in matriz_turno_pivot.columns:
+                    matriz_turno_pivot["Total"] = matriz_turno_pivot["viaje_especifico"]
+                elif "viaje_parcial" in matriz_turno_pivot.columns:
+                    matriz_turno_pivot["Total"] = matriz_turno_pivot["viaje_parcial"]
                 
                 # Renombrar columnas
                 matriz_turno_pivot = matriz_turno_pivot.rename(columns={
                     "Turno_str": "Turno",
-                    "carga": "Cargas",
-                    "descarga": "Descargas"
+                    "viaje_especifico": "Viajes Específicos",
+                    "viaje_parcial": "Viajes Parciales"
                 })
                 
                 st.dataframe(matriz_turno_pivot, use_container_width=True)
@@ -1335,11 +1158,11 @@ if archivo:
                             x=alt.X("Turno_str:N", title="Turno"),
                             y=alt.Y("Cantidad:Q", title="Cantidad de Viajes"),
                             color=alt.Color("Proceso:N",
-                                           scale=alt.Scale(domain=["carga", "descarga"], 
+                                           scale=alt.Scale(domain=["viaje_especifico", "viaje_parcial"], 
                                                          range=["#1f77b4", "#ff7f0e"])),
                             tooltip=["Turno_str:N", "Proceso:N", "Cantidad:Q"]
                         )
-                        .properties(height=300, title="Viajes de Producción por Turno")
+                        .properties(height=300, title="Secuencias de Viajes por Turno")
                     )
                     st.altair_chart(chart_turno, use_container_width=True)
                 
@@ -1350,7 +1173,7 @@ if archivo:
                 with col1:
                     # Promedio por turno
                     st.markdown("**Promedio de Viajes por Día de Turno:**")
-                    dias_unicos = viajes_produccion["Fecha_Turno"].nunique()
+                    dias_unicos = viajes_especificos["Fecha_Turno"].nunique()
                     if dias_unicos > 0:
                         for turno in ["Día", "Noche"]:
                             total_turno = matriz_turno_pivot[matriz_turno_pivot["Turno"] == turno]["Total"].sum() if not matriz_turno_pivot.empty else 0
@@ -1371,10 +1194,10 @@ if archivo:
                 st.markdown("**📅🌅 Matriz Combinada por Fecha y Turno**")
                 
                 # Crear descripción combinada de fecha-turno
-                viajes_produccion["Fecha_Turno_str"] = viajes_produccion["Fecha_str"] + " - " + viajes_produccion["Turno_str"]
+                viajes_especificos["Fecha_Turno_str"] = viajes_especificos["Fecha_str"] + " - " + viajes_especificos["Turno_str"]
                 
                 # Matriz combinada
-                matriz_fecha_turno = viajes_produccion.groupby(["Fecha_Turno_str", "Proceso"]).size().reset_index(name="Cantidad")
+                matriz_fecha_turno = viajes_especificos.groupby(["Fecha_Turno_str", "Proceso"]).size().reset_index(name="Cantidad")
                 
                 # Pivot combinado
                 matriz_ft_pivot = matriz_fecha_turno.pivot_table(
@@ -1386,25 +1209,25 @@ if archivo:
                 ).reset_index()
                 
                 # Agregar columna de total
-                if "carga" in matriz_ft_pivot.columns and "descarga" in matriz_ft_pivot.columns:
-                    matriz_ft_pivot["Total"] = matriz_ft_pivot["carga"] + matriz_ft_pivot["descarga"]
-                elif "carga" in matriz_ft_pivot.columns:
-                    matriz_ft_pivot["Total"] = matriz_ft_pivot["carga"]
-                elif "descarga" in matriz_ft_pivot.columns:
-                    matriz_ft_pivot["Total"] = matriz_ft_pivot["descarga"]
+                if "viaje_especifico" in matriz_ft_pivot.columns and "viaje_parcial" in matriz_ft_pivot.columns:
+                    matriz_ft_pivot["Total"] = matriz_ft_pivot["viaje_especifico"] + matriz_ft_pivot["viaje_parcial"]
+                elif "viaje_especifico" in matriz_ft_pivot.columns:
+                    matriz_ft_pivot["Total"] = matriz_ft_pivot["viaje_especifico"]
+                elif "viaje_parcial" in matriz_ft_pivot.columns:
+                    matriz_ft_pivot["Total"] = matriz_ft_pivot["viaje_parcial"]
                 
                 # Renombrar columnas
                 matriz_ft_pivot = matriz_ft_pivot.rename(columns={
                     "Fecha_Turno_str": "Fecha - Turno",
-                    "carga": "Cargas",
-                    "descarga": "Descargas"
+                    "viaje_especifico": "Viajes Específicos",
+                    "viaje_parcial": "Viajes Parciales"
                 })
                 
                 st.dataframe(matriz_ft_pivot, use_container_width=True)
                 
                 # Mostrar detalles con descripción completa de turnos
                 st.markdown("**🔍 Vista Detallada con Horarios:**")
-                detalle_turnos = viajes_produccion.groupby(["Descripcion_Turno", "Proceso"]).size().reset_index(name="Cantidad")
+                detalle_turnos = viajes_especificos.groupby(["Descripcion_Turno", "Proceso"]).size().reset_index(name="Cantidad")
                 detalle_pivot = detalle_turnos.pivot_table(
                     index="Descripcion_Turno",
                     columns="Proceso",
@@ -1414,18 +1237,18 @@ if archivo:
                 ).reset_index()
                 
                 # Agregar total
-                if "carga" in detalle_pivot.columns and "descarga" in detalle_pivot.columns:
-                    detalle_pivot["Total"] = detalle_pivot["carga"] + detalle_pivot["descarga"]
-                elif "carga" in detalle_pivot.columns:
-                    detalle_pivot["Total"] = detalle_pivot["carga"]
-                elif "descarga" in detalle_pivot.columns:
-                    detalle_pivot["Total"] = detalle_pivot["descarga"]
+                if "viaje_especifico" in detalle_pivot.columns and "viaje_parcial" in detalle_pivot.columns:
+                    detalle_pivot["Total"] = detalle_pivot["viaje_especifico"] + detalle_pivot["viaje_parcial"]
+                elif "viaje_especifico" in detalle_pivot.columns:
+                    detalle_pivot["Total"] = detalle_pivot["viaje_especifico"]
+                elif "viaje_parcial" in detalle_pivot.columns:
+                    detalle_pivot["Total"] = detalle_pivot["viaje_parcial"]
                 
                 # Renombrar
                 detalle_pivot = detalle_pivot.rename(columns={
                     "Descripcion_Turno": "Turno Detallado",
-                    "carga": "Cargas",
-                    "descarga": "Descargas"
+                    "viaje_especifico": "Viajes Específicos",
+                    "viaje_parcial": "Viajes Parciales"
                 })
                 
                 st.dataframe(detalle_pivot, use_container_width=True)
@@ -1434,11 +1257,11 @@ if archivo:
                 st.markdown("**🚛 Detalle de Viajes por Vehículo con Fecha y Turno**")
                 
                 # Selector de vehículo para el detalle
-                vehiculos_disponibles = sorted(viajes_produccion["Nombre del Vehículo"].unique())
+                vehiculos_disponibles = sorted(viajes_especificos["Nombre del Vehículo"].unique())
                 veh_detalle = st.selectbox("Seleccionar vehículo para detalle:", vehiculos_disponibles, key="veh_detalle")
                 
                 # Filtrar por vehículo seleccionado
-                viajes_veh = viajes_produccion[viajes_produccion["Nombre del Vehículo"] == veh_detalle]
+                viajes_veh = viajes_especificos[viajes_especificos["Nombre del Vehículo"] == veh_detalle]
                 
                 if not viajes_veh.empty:
                     # Sub-tabs para diferentes vistas del vehículo
@@ -1473,17 +1296,17 @@ if archivo:
                             ).reset_index()
                             
                             # Agregar total
-                            if "carga" in pivot_veh_fecha.columns and "descarga" in pivot_veh_fecha.columns:
-                                pivot_veh_fecha["Total"] = pivot_veh_fecha["carga"] + pivot_veh_fecha["descarga"]
-                            elif "carga" in pivot_veh_fecha.columns:
-                                pivot_veh_fecha["Total"] = pivot_veh_fecha["carga"]
-                            elif "descarga" in pivot_veh_fecha.columns:
-                                pivot_veh_fecha["Total"] = pivot_veh_fecha["descarga"]
+                            if "viaje_especifico" in pivot_veh_fecha.columns and "viaje_parcial" in pivot_veh_fecha.columns:
+                                pivot_veh_fecha["Total"] = pivot_veh_fecha["viaje_especifico"] + pivot_veh_fecha["viaje_parcial"]
+                            elif "viaje_especifico" in pivot_veh_fecha.columns:
+                                pivot_veh_fecha["Total"] = pivot_veh_fecha["viaje_especifico"]
+                            elif "viaje_parcial" in pivot_veh_fecha.columns:
+                                pivot_veh_fecha["Total"] = pivot_veh_fecha["viaje_parcial"]
                             
                             pivot_veh_fecha = pivot_veh_fecha.rename(columns={
                                 "Fecha_str": "Fecha",
-                                "carga": "Cargas", 
-                                "descarga": "Descargas"
+                                "viaje_especifico": "Viajes Específicos", 
+                                "viaje_parcial": "Viajes Parciales"
                             })
                             
                             st.dataframe(pivot_veh_fecha, use_container_width=True)
@@ -1503,17 +1326,17 @@ if archivo:
                             ).reset_index()
                             
                             # Agregar total
-                            if "carga" in pivot_veh_turno.columns and "descarga" in pivot_veh_turno.columns:
-                                pivot_veh_turno["Total"] = pivot_veh_turno["carga"] + pivot_veh_turno["descarga"]
-                            elif "carga" in pivot_veh_turno.columns:
-                                pivot_veh_turno["Total"] = pivot_veh_turno["carga"]
-                            elif "descarga" in pivot_veh_turno.columns:
-                                pivot_veh_turno["Total"] = pivot_veh_turno["descarga"]
+                            if "viaje_especifico" in pivot_veh_turno.columns and "viaje_parcial" in pivot_veh_turno.columns:
+                                pivot_veh_turno["Total"] = pivot_veh_turno["viaje_especifico"] + pivot_veh_turno["viaje_parcial"]
+                            elif "viaje_especifico" in pivot_veh_turno.columns:
+                                pivot_veh_turno["Total"] = pivot_veh_turno["viaje_especifico"]
+                            elif "viaje_parcial" in pivot_veh_turno.columns:
+                                pivot_veh_turno["Total"] = pivot_veh_turno["viaje_parcial"]
                             
                             pivot_veh_turno = pivot_veh_turno.rename(columns={
                                 "Turno_str": "Turno",
-                                "carga": "Cargas",
-                                "descarga": "Descargas"
+                                "viaje_especifico": "Viajes Específicos",
+                                "viaje_parcial": "Viajes Parciales"
                             })
                             
                             st.dataframe(pivot_veh_turno, use_container_width=True)
@@ -1522,16 +1345,16 @@ if archivo:
                     st.markdown(f"**📊 Estadísticas Generales - {veh_detalle}:**")
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
-                        carga_veh = len(viajes_veh[viajes_veh["Proceso"] == "carga"])
-                        st.metric("Cargas Total", carga_veh)
+                        viajes_esp_veh = len(viajes_veh[viajes_veh["Proceso"] == "viaje_especifico"])
+                        st.metric("Viajes Específicos", viajes_esp_veh)
                     with col2:
-                        descarga_veh = len(viajes_veh[viajes_veh["Proceso"] == "descarga"])
-                        st.metric("Descargas Total", descarga_veh)
+                        viajes_par_veh = len(viajes_veh[viajes_veh["Proceso"] == "viaje_parcial"])
+                        st.metric("Viajes Parciales", viajes_par_veh)
                     with col3:
                         dias_activos = viajes_veh["Fecha_Turno"].nunique()
                         st.metric("Días Activos", dias_activos)
                     with col4:
-                        total_veh = carga_veh + descarga_veh
+                        total_veh = viajes_esp_veh + viajes_par_veh
                         promedio_dia = total_veh / dias_activos if dias_activos > 0 else 0
                         st.metric("Promedio/Día", f"{promedio_dia:.1f}")
                     
@@ -1547,7 +1370,7 @@ if archivo:
                 
                 # Resumen por todos los vehículos con fecha y turno
                 st.markdown("**📋 Resumen General por Todos los Vehículos:**")
-                resumen_vehiculos = viajes_produccion.groupby(["Nombre del Vehículo", "Proceso"]).size().reset_index(name="Cantidad")
+                resumen_vehiculos = viajes_especificos.groupby(["Nombre del Vehículo", "Proceso"]).size().reset_index(name="Cantidad")
                 resumen_pivot = resumen_vehiculos.pivot_table(
                     index="Nombre del Vehículo",
                     columns="Proceso",
@@ -1560,7 +1383,7 @@ if archivo:
                 resumen_pivot["Total"] = resumen_pivot.sum(axis=1)
                 
                 # Agregar días activos por vehículo
-                dias_por_vehiculo = viajes_produccion.groupby("Nombre del Vehículo")["Fecha_Turno"].nunique().reset_index()
+                dias_por_vehiculo = viajes_especificos.groupby("Nombre del Vehículo")["Fecha_Turno"].nunique().reset_index()
                 dias_por_vehiculo.columns = ["Nombre del Vehículo", "Dias_Activos"]
                 
                 # Merge con resumen
@@ -1576,8 +1399,8 @@ if archivo:
                 # Renombrar columnas para presentación
                 resumen_final = resumen_final.rename(columns={
                     "Nombre del Vehículo": "Vehículo",
-                    "carga": "Cargas",
-                    "descarga": "Descargas",
+                    "viaje_especifico": "Viajes Específicos",
+                    "viaje_parcial": "Viajes Parciales",
                     "Dias_Activos": "Días Activos",
                     "Promedio_Dia": "Prom/Día"
                 })
@@ -1585,7 +1408,7 @@ if archivo:
                 st.dataframe(resumen_final, use_container_width=True)
                 
         else:
-            st.info("No se encontraron viajes de producción con los filtros aplicados.")
+            st.info("No se encontraron secuencias de viajes entre geocercas específicas con los filtros aplicados.")
     else:
         st.info("No hay transiciones para mostrar la matriz.")
 
@@ -1816,438 +1639,106 @@ if archivo:
         st.success("✅ No se encontraron zonas candidatas con los parámetros seleccionados")
         st.info("Esto puede indicar que todas las áreas operacionales importantes ya están mapeadas como geocercas")
 
-    # ─── SECCIÓN 6: Análisis Detallado de Viajes por Hora ────────────────────────
-    st.subheader("📊 Análisis Detallado de Viajes por Hora - Carga y Descarga")
+
+
+
+
+    # ─── SECCIÓN 6: Resumen de Viajes por Vehículo y Geocerca ────────────────────────
+    st.subheader("📊 Resumen de Viajes por Vehículo y Geocerca")
     
     if not trans_filtradas.empty:
-        # Construir análisis horario detallado
-        analisis_general, analisis_por_vehiculo = construir_analisis_horario(trans_filtradas)
+        # Filtrar solo viajes válidos (específicos y parciales)
+        viajes_validos = trans_filtradas[trans_filtradas["Proceso"].isin(["viaje_especifico", "viaje_parcial"])]
         
-        if not analisis_general.empty:
-            # Tabs para diferentes vistas del análisis
-            tab1, tab2, tab3, tab4 = st.tabs([
-                "📈 Vista General por Hora", 
-                "🚛 Detalle por Vehículo", 
-                "📋 Tabla Resumen General",
-                "🔍 Tabla Detallada por Vehículo"
-            ])
+        if not viajes_validos.empty:
+            # Crear resumen por vehículo y geocerca de destino
+            resumen_vehiculos_geocercas = viajes_validos.groupby([
+                "Nombre del Vehículo", 
+                "Destino", 
+                "Proceso"
+            ]).size().reset_index(name="Cantidad")
             
-            with tab1:
-                st.markdown("**Vista General: Todos los Vehículos por Hora**")
-                
-                # Gráfico de líneas para vista general
-                chart_general = (
-                    alt.Chart(analisis_general)
-                    .mark_line(point=True, size=3)
-                    .encode(
-                        x=alt.X("Fecha_Hora:T", title="Fecha-Hora", axis=alt.Axis(labelAngle=-45)),
-                        y=alt.Y("Cantidad_Viajes:Q", title="Cantidad de Viajes"),
-                        color=alt.Color("Proceso:N", 
-                                       scale=alt.Scale(domain=["carga", "descarga"], 
-                                                     range=["#1f77b4", "#ff7f0e"]),
-                                       legend=alt.Legend(title="Tipo de Viaje")),
-                        tooltip=["Fecha_Hora:T", "Hora_str:N", "Proceso:N", "Cantidad_Viajes:Q", "Descripcion_Turno:N"]
-                    )
-                    .properties(height=400, title="Producción Horaria - Todos los Vehículos")
-                )
-                st.altair_chart(chart_general, use_container_width=True)
-                
-                # Estadísticas generales
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    total_carga_hora = analisis_general[analisis_general["Proceso"] == "carga"]["Cantidad_Viajes"].sum()
-                    st.metric("Total Cargas", total_carga_hora)
-                with col2:
-                    total_descarga_hora = analisis_general[analisis_general["Proceso"] == "descarga"]["Cantidad_Viajes"].sum()
-                    st.metric("Total Descargas", total_descarga_hora)
-                with col3:
-                    horas_activas = analisis_general["Fecha_Hora"].nunique()
-                    st.metric("Horas con Actividad", horas_activas)
-                with col4:
-                    promedio_por_hora = (total_carga_hora + total_descarga_hora) / horas_activas if horas_activas > 0 else 0
-                    st.metric("Promedio Viajes/Hora", f"{promedio_por_hora:.1f}")
+            # Crear tabla pivot para mejor visualización
+            resumen_pivot = resumen_vehiculos_geocercas.pivot_table(
+                index=["Nombre del Vehículo", "Destino"],
+                columns="Proceso",
+                values="Cantidad",
+                fill_value=0,
+                aggfunc="sum"
+            ).reset_index()
             
-            with tab2:
-                st.markdown("**Análisis Individual por Vehículo**")
-                
-                # Selector de vehículo para análisis individual
-                vehiculos_disponibles = sorted(analisis_por_vehiculo["Nombre del Vehículo"].unique())
-                veh_analisis = st.selectbox("Seleccionar vehículo para análisis horario:", vehiculos_disponibles, key="veh_analisis_hora")
-                
-                # Filtrar datos del vehículo seleccionado
-                datos_vehiculo = analisis_por_vehiculo[analisis_por_vehiculo["Nombre del Vehículo"] == veh_analisis]
-                
-                if not datos_vehiculo.empty:
-                    # Gráfico para el vehículo específico
-                    chart_vehiculo = (
-                        alt.Chart(datos_vehiculo)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("Fecha_Hora:T", title="Fecha-Hora", axis=alt.Axis(labelAngle=-45)),
-                            y=alt.Y("Cantidad_Viajes:Q", title="Cantidad de Viajes"),
-                            color=alt.Color("Proceso:N", 
-                                           scale=alt.Scale(domain=["carga", "descarga"], 
-                                                         range=["#1f77b4", "#ff7f0e"])),
-                            tooltip=["Fecha_Hora:T", "Proceso:N", "Cantidad_Viajes:Q", "Origen:N", "Destino:N", "Descripcion_Turno:N"]
-                        )
-                        .properties(height=400, title=f"Actividad Horaria - {veh_analisis}")
-                    )
-                    st.altair_chart(chart_vehiculo, use_container_width=True)
-                    
-                    # Estadísticas del vehículo
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        carga_veh = datos_vehiculo[datos_vehiculo["Proceso"] == "carga"]["Cantidad_Viajes"].sum()
-                        st.metric(f"Cargas - {veh_analisis}", carga_veh)
-                    with col2:
-                        descarga_veh = datos_vehiculo[datos_vehiculo["Proceso"] == "descarga"]["Cantidad_Viajes"].sum()
-                        st.metric(f"Descargas - {veh_analisis}", descarga_veh) 
-                    with col3:
-                        horas_activas_veh = datos_vehiculo["Fecha_Hora"].nunique()
-                        st.metric(f"Horas Activas", horas_activas_veh)
-                    with col4:
-                        total_veh = carga_veh + descarga_veh
-                        promedio_veh = total_veh / horas_activas_veh if horas_activas_veh > 0 else 0
-                        st.metric(f"Promedio/Hora", f"{promedio_veh:.1f}")
-                    
-                    # Mostrar rutas más frecuentes del vehículo
-                    st.markdown(f"**🛣️ Rutas Frecuentes - {veh_analisis}:**")
-                    rutas_frecuentes = datos_vehiculo.groupby(["Origen", "Destino", "Proceso"])["Cantidad_Viajes"].sum().reset_index()
-                    rutas_frecuentes = rutas_frecuentes.sort_values("Cantidad_Viajes", ascending=False)
-                    st.dataframe(rutas_frecuentes, use_container_width=True)
-                else:
-                    st.info("No hay datos para el vehículo seleccionado.")
+            # Agregar columna de total
+            if "viaje_especifico" in resumen_pivot.columns and "viaje_parcial" in resumen_pivot.columns:
+                resumen_pivot["Total"] = resumen_pivot["viaje_especifico"] + resumen_pivot["viaje_parcial"]
+            elif "viaje_especifico" in resumen_pivot.columns:
+                resumen_pivot["Total"] = resumen_pivot["viaje_especifico"]
+            elif "viaje_parcial" in resumen_pivot.columns:
+                resumen_pivot["Total"] = resumen_pivot["viaje_parcial"]
             
-            with tab3:
-                st.markdown("**📋 Tabla Resumen General por Hora**")
-                # Crear tabla pivot para mejor visualización
-                tabla_resumen = analisis_general.pivot_table(
-                    index=["Fecha_Hora", "Hora_str", "Descripcion_Turno"],
-                    columns="Proceso",
-                    values="Cantidad_Viajes",
-                    fill_value=0,
-                    aggfunc="sum"
-                ).reset_index()
-                
-                # Agregar columna de total
-                if "carga" in tabla_resumen.columns and "descarga" in tabla_resumen.columns:
-                    tabla_resumen["Total"] = tabla_resumen["carga"] + tabla_resumen["descarga"]
-                elif "carga" in tabla_resumen.columns:
-                    tabla_resumen["Total"] = tabla_resumen["carga"]
-                elif "descarga" in tabla_resumen.columns:
-                    tabla_resumen["Total"] = tabla_resumen["descarga"]
-                
-                # Renombrar columnas para mejor presentación
-                tabla_resumen = tabla_resumen.rename(columns={
-                    "Fecha_Hora": "Fecha-Hora",
-                    "Hora_str": "Hora",
-                    "Descripcion_Turno": "Turno",
-                    "carga": "Cargas",
-                    "descarga": "Descargas"
-                })
-                
-                st.dataframe(tabla_resumen, use_container_width=True)
+            # Renombrar columnas para mejor presentación
+            resumen_pivot = resumen_pivot.rename(columns={
+                "Nombre del Vehículo": "Vehículo",
+                "Destino": "Geocerca Destino",
+                "viaje_especifico": "Viajes Específicos",
+                "viaje_parcial": "Viajes Parciales"
+            })
             
-            with tab4:
-                st.markdown("**🔍 Tabla Detallada por Vehículo y Hora**")
-                # Preparar tabla detallada
-                tabla_detallada = analisis_por_vehiculo.copy()
-                tabla_detallada = tabla_detallada.rename(columns={
-                    "Nombre del Vehículo": "Vehículo",
-                    "Fecha_Hora": "Fecha-Hora",
-                    "Hora_str": "Hora",
-                    "Descripcion_Turno": "Turno",
-                    "Cantidad_Viajes": "Viajes",
-                    "Origen": "Orígenes",
-                    "Destino": "Destinos"
-                })
-                
-                # Permitir filtrar por vehículo
-                vehiculos_tabla = ["Todos"] + sorted(tabla_detallada["Vehículo"].unique())
-                veh_filtro_tabla = st.selectbox("Filtrar por vehículo:", vehiculos_tabla, key="filtro_tabla_detallada")
-                
-                if veh_filtro_tabla != "Todos":
-                    tabla_detallada = tabla_detallada[tabla_detallada["Vehículo"] == veh_filtro_tabla]
-                
-                st.dataframe(tabla_detallada, use_container_width=True)
-                
-                # Estadísticas de la tabla filtrada
-                if not tabla_detallada.empty:
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        total_registros = len(tabla_detallada)
-                        st.metric("Registros Mostrados", total_registros)
-                    with col2:
-                        total_viajes_tabla = tabla_detallada["Viajes"].sum()
-                        st.metric("Total Viajes", total_viajes_tabla)
-                    with col3:
-                        vehiculos_unicos = tabla_detallada["Vehículo"].nunique()
-                        st.metric("Vehículos Únicos", vehiculos_unicos)
-        else:
-            st.info("No hay viajes de producción para mostrar el análisis horario.")
-    else:
-        st.info("No hay datos de producción para mostrar.")
-
-    # ─── SECCIÓN 6: Toneladas Estimadas ────────────────────────
-    st.subheader("🪨 Toneladas Acumuladas (Estimadas)")
-    
-    if not trans_filtradas.empty:
-        viajes_produccion_tons = trans_filtradas[trans_filtradas["Proceso"].isin(["carga", "descarga"])].copy()
-        
-        if not viajes_produccion_tons.empty:
-            # Asignar promedio fijo de 42 toneladas por viaje de producción
-            viajes_produccion_tons["Toneladas"] = 42.0
-
-            # Agrupar por hora y tipo de proceso
-            tons_h = (
-                viajes_produccion_tons.groupby([
-                    viajes_produccion_tons["Tiempo_entrada"].dt.floor("h"),
-                    "Proceso"
-                ])["Toneladas"].sum().reset_index()
-                .rename(columns={"Tiempo_entrada": "Hora_cal", "Toneladas": "Toneladas_h"})
-            )
-
-            # Gráfico de toneladas
-            bar_tons = (
-                alt.Chart(tons_h)
+            # Ordenar por total descendente
+            resumen_pivot = resumen_pivot.sort_values("Total", ascending=False)
+            
+            st.dataframe(resumen_pivot, use_container_width=True)
+            
+            # Estadísticas generales
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                total_viajes_esp = resumen_pivot["Viajes Específicos"].sum() if "Viajes Específicos" in resumen_pivot.columns else 0
+                st.metric("Total Viajes Específicos", total_viajes_esp)
+            with col2:
+                total_viajes_par = resumen_pivot["Viajes Parciales"].sum() if "Viajes Parciales" in resumen_pivot.columns else 0
+                st.metric("Total Viajes Parciales", total_viajes_par)
+            with col3:
+                vehiculos_unicos = resumen_pivot["Vehículo"].nunique()
+                st.metric("Vehículos Únicos", vehiculos_unicos)
+            with col4:
+                geocercas_unicas = resumen_pivot["Geocerca Destino"].nunique()
+                st.metric("Geocercas Únicas", geocercas_unicas)
+            
+            # Gráfico de viajes por vehículo
+            st.subheader("🚛 Viajes por Vehículo")
+            viajes_por_vehiculo = resumen_pivot.groupby("Vehículo")["Total"].sum().reset_index()
+            viajes_por_vehiculo = viajes_por_vehiculo.sort_values("Total", ascending=False)
+            
+            chart_vehiculos = (
+                alt.Chart(viajes_por_vehiculo)
                 .mark_bar()
                 .encode(
-                    x=alt.X("Hora_cal:T", title="Fecha-hora"),
-                    y=alt.Y("Toneladas_h:Q", title="Toneladas"),
-                    color=alt.Color("Proceso:N", 
-                                   scale=alt.Scale(domain=["carga", "descarga"], 
-                                                 range=["#1f77b4", "#ff7f0e"])),
-                    tooltip=["Hora_cal:T", "Proceso:N", "Toneladas_h:Q"]
+                    x=alt.X("Vehículo:N", sort="-y", title="Vehículo"),
+                    y=alt.Y("Total:Q", title="Total de Viajes"),
+                    tooltip=["Vehículo:N", "Total:Q"]
                 )
-                .properties(height=300, title="Toneladas por hora - Carga y Descarga")
+                .properties(height=300, title="Total de Viajes por Vehículo")
             )
-            st.altair_chart(bar_tons, use_container_width=True)
+            st.altair_chart(chart_vehiculos, use_container_width=True)
             
-            # Estadísticas de toneladas
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                toneladas_carga = viajes_produccion_tons[viajes_produccion_tons["Proceso"] == "carga"]["Toneladas"].sum()
-                st.metric("Toneladas carga", f"{toneladas_carga:.1f} t")
-            with col2:
-                toneladas_descarga = viajes_produccion_tons[viajes_produccion_tons["Proceso"] == "descarga"]["Toneladas"].sum()
-                st.metric("Toneladas descarga", f"{toneladas_descarga:.1f} t")
-            with col3:
-                toneladas_total = viajes_produccion_tons["Toneladas"].sum()
-                st.metric("Toneladas total", f"{toneladas_total:.1f} t")
-        else:
-            st.info("Sin viajes de producción – no se estiman toneladas.")
-    else:
-        st.info("No hay datos para estimar toneladas.")
-
-    # ─── SECCIÓN 7: Análisis de Detenciones Anómalas ────────────────────────
-    st.subheader("🚨 Análisis de Detenciones Anómalas")
-    
-    if not trans_filtradas.empty and not df.empty:
-        # Ejecutar análisis de detenciones
-        detenciones = analizar_detenciones_anomalas(df, trans_filtradas)
-        
-        if not detenciones.empty:
-            # Aplicar filtros a las detenciones
-            detenciones_filtradas = detenciones.copy()
-            if veh_sel != "Todos":
-                detenciones_filtradas = detenciones_filtradas[detenciones_filtradas["Nombre del Vehículo"] == veh_sel]
+            # Gráfico de viajes por geocerca
+            st.subheader("🏭 Viajes por Geocerca")
+            viajes_por_geocerca = resumen_pivot.groupby("Geocerca Destino")["Total"].sum().reset_index()
+            viajes_por_geocerca = viajes_por_geocerca.sort_values("Total", ascending=False)
             
-            st.info(f"""
-            **🎯 Criterios de Detección:**
-            • **Detención**: Velocidad < 2 km/h por más de 10 minutos consecutivos
-            • **Anómala**: Duración > promedio + 2σ de la geocerca específica  
-            • **Solo geocercas operacionales**: Stocks, Módulos, Pilas ROM, Botaderos
-            • **Severidad**: Alta (>150% umbral), Media (>120% umbral)
-            """)
+            chart_geocercas = (
+                alt.Chart(viajes_por_geocerca)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Geocerca Destino:N", sort="-y", title="Geocerca"),
+                    y=alt.Y("Total:Q", title="Total de Viajes"),
+                    tooltip=["Geocerca Destino:N", "Total:Q"]
+                )
+                .properties(height=300, title="Total de Viajes por Geocerca")
+            )
+            st.altair_chart(chart_geocercas, use_container_width=True)
             
-            if not detenciones_filtradas.empty:
-                # Estadísticas generales
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total Detenciones", len(detenciones_filtradas))
-                with col2:
-                    severidad_alta = len(detenciones_filtradas[detenciones_filtradas["Severidad"] == "Alta"])
-                    st.metric("Severidad Alta", severidad_alta)
-                with col3:
-                    duracion_promedio = detenciones_filtradas["Duracion_total_min"].mean()
-                    st.metric("Duración Promedio", f"{duracion_promedio:.1f} min")
-                with col4:
-                    exceso_total = detenciones_filtradas["Exceso_min"].sum()
-                    st.metric("Tiempo Excedido Total", f"{exceso_total:.1f} min")
-                
-                # Tabs para diferentes vistas
-                tab1, tab2, tab3, tab4 = st.tabs([
-                    "📋 Detalle de Detenciones",
-                    "📊 Por Vehículo", 
-                    "🏭 Por Geocerca",
-                    "📈 Gráficos"
-                ])
-                
-                with tab1:
-                    st.markdown("**🔍 Detenciones Detectadas:**")
-                    
-                    # Formatear tabla para mejor visualización
-                    detenciones_display = detenciones_filtradas.copy()
-                    detenciones_display["Tiempo_inicio"] = detenciones_display["Tiempo_inicio"].dt.strftime("%d/%m/%Y %H:%M")
-                    detenciones_display["Tiempo_fin"] = detenciones_display["Tiempo_fin"].dt.strftime("%d/%m/%Y %H:%M")
-                    
-                    # Aplicar colores según severidad
-                    def colorear_severidad(val):
-                        if val == "Alta":
-                            return "background-color: #ffebee; color: #c62828"
-                        elif val == "Media":
-                            return "background-color: #fff3e0; color: #ef6c00"
-                        return ""
-                    
-                    styled_df = detenciones_display.style.applymap(
-                        colorear_severidad, subset=["Severidad"]
-                    )
-                    
-                    st.dataframe(styled_df, use_container_width=True)
-                    
-                    # Botón de descarga
-                    csv = detenciones_filtradas.to_csv(index=False)
-                    st.download_button(
-                        "📥 Descargar Detenciones CSV",
-                        csv,
-                        "detenciones_anomalas.csv",
-                        "text/csv"
-                    )
-                
-                with tab2:
-                    st.markdown("**👷 Resumen por Vehículo:**")
-                    
-                    resumen_vehiculos = detenciones_filtradas.groupby("Nombre del Vehículo").agg({
-                        "Duracion_total_min": ["count", "sum", "mean"],
-                        "Exceso_min": "sum",
-                        "Severidad": lambda x: (x == "Alta").sum()
-                    }).round(1)
-                    
-                    resumen_vehiculos.columns = [
-                        "Cantidad", "Duración Total (min)", "Duración Promedio (min)", 
-                        "Exceso Total (min)", "Severidad Alta"
-                    ]
-                    
-                    st.dataframe(resumen_vehiculos, use_container_width=True)
-                
-                with tab3:
-                    st.markdown("**🏭 Resumen por Geocerca:**")
-                    
-                    resumen_geocercas = detenciones_filtradas.groupby("Geocerca").agg({
-                        "Duracion_total_min": ["count", "sum", "mean"],
-                        "Nombre del Vehículo": "nunique",
-                        "Severidad": lambda x: (x == "Alta").sum()
-                    }).round(1)
-                    
-                    resumen_geocercas.columns = [
-                        "Cantidad", "Duración Total (min)", "Duración Promedio (min)",
-                        "Vehículos Afectados", "Severidad Alta"
-                    ]
-                    
-                    st.dataframe(resumen_geocercas, use_container_width=True)
-                
-                with tab4:
-                    st.markdown("**📈 Visualizaciones:**")
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        # Gráfico por severidad
-                        severidad_counts = detenciones_filtradas["Severidad"].value_counts()
-                        chart_severidad = alt.Chart(
-                            severidad_counts.reset_index()
-                        ).mark_arc().encode(
-                            theta=alt.Theta("count:Q"),
-                            color=alt.Color("Severidad:N", 
-                                scale=alt.Scale(range=["#ff5722", "#ff9800", "#4caf50"])),
-                            tooltip=["Severidad:N", "count:Q"]
-                        ).properties(
-                            title="Distribución por Severidad",
-                            width=300,
-                            height=300
-                        )
-                        st.altair_chart(chart_severidad, use_container_width=True)
-                    
-                    with col2:
-                        # Gráfico de duración vs exceso
-                        chart_duracion = alt.Chart(detenciones_filtradas).mark_circle(size=100).encode(
-                            x=alt.X("Duracion_total_min:Q", title="Duración Total (min)"),
-                            y=alt.Y("Exceso_min:Q", title="Exceso sobre Normal (min)"),
-                            color=alt.Color("Severidad:N", 
-                                scale=alt.Scale(range=["#ff5722", "#ff9800"])),
-                            tooltip=["Nombre del Vehículo:N", "Geocerca:N", 
-                                   "Duracion_total_min:Q", "Exceso_min:Q", "Severidad:N"]
-                        ).properties(
-                            title="Duración vs Exceso",
-                            width=300,
-                            height=300
-                        )
-                        st.altair_chart(chart_duracion, use_container_width=True)
-                    
-                    # Timeline de detenciones
-                    if len(detenciones_filtradas) > 0:
-                        st.markdown("**⏱️ Timeline de Detenciones:**")
-                        
-                        chart_timeline = alt.Chart(detenciones_filtradas).mark_bar().encode(
-                            x=alt.X("Tiempo_inicio:T", title="Tiempo"),
-                            x2=alt.X2("Tiempo_fin:T"),
-                            y=alt.Y("Nombre del Vehículo:N", title="Vehículo"),
-                            color=alt.Color("Severidad:N", 
-                                scale=alt.Scale(range=["#ff5722", "#ff9800"])),
-                            tooltip=["Nombre del Vehículo:N", "Geocerca:N", 
-                                   "Tiempo_inicio:T", "Tiempo_fin:T", 
-                                   "Duracion_total_min:Q", "Severidad:N"]
-                        ).properties(
-                            title="Timeline de Detenciones por Vehículo",
-                            width=700,
-                            height=300
-                        )
-                        st.altair_chart(chart_timeline, use_container_width=True)
-            else:
-                st.success("✅ No se detectaron detenciones anómalas para los filtros seleccionados")
         else:
-            st.success("✅ No se detectaron detenciones anómalas en el período analizado")
-    else:
-        st.info("📊 Selecciona datos para analizar detenciones anómalas")
-
-    # ─── SECCIÓN 8: Resumen de Viajes por Tipo ────────────────────────
-    st.subheader("📊 Resumen de Viajes por Tipo")
-    
-    if not trans_filtradas.empty:
-        # Contar por tipo de proceso
-        conteo_procesos = trans_filtradas["Proceso"].value_counts()
-        
-        # Crear DataFrame con información detallada
-        resumen_viajes = pd.DataFrame({
-            "Tipo de Viaje": ["Carga", "Descarga", "Retorno", "Otros"],
-            "Cantidad": [
-                conteo_procesos.get("carga", 0),
-                conteo_procesos.get("descarga", 0),
-                conteo_procesos.get("retorno", 0),
-                conteo_procesos.get("otro", 0)
-            ]
-        })
-        
-        # Agregar porcentajes
-        total_viajes = resumen_viajes["Cantidad"].sum()
-        if total_viajes > 0:
-            resumen_viajes["Porcentaje"] = (resumen_viajes["Cantidad"] / total_viajes * 100).round(1)
-        else:
-            resumen_viajes["Porcentaje"] = 0
-        
-        # Mostrar tabla
-        st.dataframe(resumen_viajes, use_container_width=True)
-        
-        # Mostrar métricas destacadas
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Viajes de Carga", conteo_procesos.get("carga", 0))
-        with col2:
-            st.metric("Viajes de Descarga", conteo_procesos.get("descarga", 0))
-        with col3:
-            st.metric("Viajes de Retorno", conteo_procesos.get("retorno", 0))
-        with col4:
-            st.metric("Otros Viajes", conteo_procesos.get("otro", 0))
+            st.info("No se encontraron viajes válidos para mostrar el resumen.")
     else:
         st.info("No hay datos de viajes para mostrar el resumen.")
 
