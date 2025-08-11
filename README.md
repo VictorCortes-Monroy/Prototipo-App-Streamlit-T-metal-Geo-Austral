@@ -182,8 +182,8 @@ Este proyecto está bajo la Licencia MIT. Ver `LICENSE` para más detalles.
 
 ## 📞 Contacto
 
-- **Desarrollador**: [Tu Nombre]
-- **Email**: [tu-email@ejemplo.com]
+- **Desarrollador**: Victor Cortes-Monroy  
+- **Email**: v.cortesmonroy@tmetal.cl  
 - **Proyecto**: [URL del repositorio]
 
 ## 🔄 Historial de Versiones
@@ -201,4 +201,5 @@ Este proyecto está bajo la Licencia MIT. Ver `LICENSE` para más detalles.
 - Versión inicial
 - Dashboard operacional completo
 - Exportación a Excel
+
 - Métricas de productividad 
