@@ -2099,7 +2099,7 @@ if archivo:
                             return "background-color: #fff3e0; color: #ef6c00"
                         return ""
                     
-                    styled_df = detenciones_display.style.applymap(
+                    styled_df = detenciones_display.style.map(
                         colorear_severidad, subset=["Severidad"]
                     )
                     
